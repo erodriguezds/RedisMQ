@@ -1,8 +1,18 @@
-# RedisModulesSDK
+# RedisMQ (still in progress!!! Please don't use it... yet)
 
-This little repo is here to help you write Redis modules a bit more easily.
+A Redis module for implementing better and truly reliable message broking within Redis.
 
-## What it includes:
+## The ReliableQueue data structure
+
+This module it's all about the ReliableQueue: a single and simple data structure to implement reliable, and practical, queues in Redis.
+
+### What about the "Reliable queue pattern"?
+
+The "Reliable queue pattern" described at https://redis.io/commands/rpoplpush only offers a solution for half of the problem (I'm not going to explain it here. Please read the pattern, if you haven't, and you'll know what can be done with the pattern). The other half without a (decent) solution is: what do we do with the messages/tasks that were never removed from the "processing" queue (because, for example, the consumer failed to process it)? You might be thinking: "Easy, dummy, you need a different consumer for consuming the "failed" messages frrom the "processing" queue"... to which I'd reply: "Great, dummy, but... how can you tell how much time those failed messages have been hanging in there in the "processing" queue? Maybe those messages were just poped-out from our actual queue, and the consumers are still processing them... If you "recover" (POP) those "maybe failed / maybe still processing" messages , and process them, you might end up having the messages being processed more than once!!!"... To which you might start having weird ideas like having the messages enveloped inside a JSON, to which you could add all the metadata you whish... and then.... forget it, my friend... all that shitty workarounds you're thinking right now should be handled by your message broker, in our case: Redis... and Redis is not even an actual message broker!!! until now...
+
+### Gimme the details about this "ReliableQueue" data structure!!!
+
+
 
 ### 1. redismodule.h
 

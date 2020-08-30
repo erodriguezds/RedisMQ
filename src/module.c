@@ -1,3 +1,4 @@
+#include <sys/time.h>
 #include "../redismodule.h"
 #include "../rmutil/util.h"
 #include "../rmutil/strings.h"
@@ -6,6 +7,40 @@
 
 static RedisModuleType *RQueueRedisType;
 #define RQUEUE_ENCODING_VERSION 0
+
+/* Return the UNIX time in microseconds */
+long long ustime(void) {
+    struct timeval tv;
+    long long ust;
+
+    gettimeofday(&tv, NULL);
+    ust = ((long long)tv.tv_sec)*1000000;
+    ust += tv.tv_usec;
+    return ust;
+}
+
+/* Return the UNIX time in milliseconds */
+mstime_t mstime(void) {
+	struct timeval tv;
+    long long ust;
+
+    gettimeofday(&tv, NULL);
+    ust = ((long long)tv.tv_sec)*1000000;
+    ust += tv.tv_usec;
+
+    return ust/1000;
+}
+
+/**
+ *  Compare a Redis string value against a native string.
+ *  If 0 is returned, the strings are equal.
+*/
+int redis_stricmp(RedisModuleString *redis_str, const char *token){
+	size_t l;
+	size_t toklen = strlen(token);
+    const char *redis_raw_str = RedisModule_StringPtrLen(redis_str, &l);
+	return strncasecmp(redis_raw_str, token, toklen);
+}
 
 //TODO
 void QueueRDBSave(RedisModuleIO *io, void *ptr) {
@@ -34,7 +69,8 @@ void QueueReleaseObject(void *value) {
 	 // Free all undelivered message
     cur = rqueue->undelivered.first;
     while(cur) {
-        next = cur->next;
+		next = cur->next;
+		RedisModule_FreeString(NULL, cur->value);
         RedisModule_Free(cur);
         cur = next;
     }
@@ -86,51 +122,6 @@ int ParseCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
   return REDISMODULE_ERR;
 }
-
-/*
-* example.HGETSET <key> <element> <value>
-* Atomically set a value in a HASH key to <value> and return its value before
-* the HSET.
-*
-* Basically atomic HGET + HSET
-*/
-int HGetSetCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-
-  // we need EXACTLY 4 arguments
-  if (argc != 4) {
-    return RedisModule_WrongArity(ctx);
-  }
-  RedisModule_AutoMemory(ctx);
-
-  // open the key and make sure it's indeed a HASH and not empty
-  RedisModuleKey *key =
-      RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ | REDISMODULE_WRITE);
-  if (RedisModule_KeyType(key) != REDISMODULE_KEYTYPE_HASH &&
-      RedisModule_KeyType(key) != REDISMODULE_KEYTYPE_EMPTY) {
-    return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
-  }
-
-  // get the current value of the hash element
-  RedisModuleCallReply *rep =
-      RedisModule_Call(ctx, "HGET", "ss", argv[1], argv[2]);
-  RMUTIL_ASSERT_NOERROR(ctx, rep);
-
-  // set the new value of the element
-  RedisModuleCallReply *srep =
-      RedisModule_Call(ctx, "HSET", "sss", argv[1], argv[2], argv[3]);
-  RMUTIL_ASSERT_NOERROR(ctx, srep);
-
-  // if the value was null before - we just return null
-  if (RedisModule_CallReplyType(rep) == REDISMODULE_REPLY_NULL) {
-    RedisModule_ReplyWithNull(ctx);
-    return REDISMODULE_OK;
-  }
-
-  // forward the HGET reply to the client
-  RedisModule_ReplyWithCallReply(ctx, rep);
-  return REDISMODULE_OK;
-}
-
 
 void initQueue(struct Queue *queue){
 	queue->len = 0;
@@ -202,13 +193,15 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	// Init the new nodes
 	for(int i = 0, j = 1; i < count; i++, j++){
 		newmsg[i].id = rqueue->nextid++;
-		newmsg[i].delivered = 0;
+		newmsg[i].created = mstime();
+		newmsg[i].lastDelivery = 0;
+		newmsg[i].deliveries = 0;
 		newmsg[i].next = (
 			j < count ?
 			&newmsg[j] :
 			NULL
 		);
-		newmsg[i].value = argv[2 + i]; 
+		newmsg[i].value = RedisModule_CreateStringFromString(NULL, argv[2 + i]);
 	}
 
 	if(rqueue->undelivered.first == NULL){
@@ -222,64 +215,94 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	return replyWith_queueInfo(ctx, RedisModule_ModuleTypeGetValue(key));
 }
 
+int rangeCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
+	if (argc < 4) return RedisModule_WrongArity(ctx);
+
+	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ);
+   
+	if(RedisModule_KeyType(key) == REDISMODULE_KEYTYPE_EMPTY){
+		return RedisModule_ReplyWithError(ctx,ERRORMSG_EMPTYKEY);
+	}
+
+	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
+	}
+
+	struct RQueueObject *rqueue = RedisModule_ModuleTypeGetValue(key);
+
+	struct Msg *cur = (
+		redis_stricmp(argv[2], "PENDING") == 0 ?
+		rqueue->delivered.first :
+		rqueue->undelivered.first
+	);
+
+	long total = 0;
+	RedisModule_ReplyWithArray(ctx,REDISMODULE_POSTPONED_ARRAY_LEN);
+	while(cur){
+		RedisModule_ReplyWithArray(ctx,3);
+		RedisModule_ReplyWithLongLong(ctx, cur->id);
+		RedisModule_ReplyWithLongLong(ctx, cur->created);
+		//RedisModule_ReplyWithLongLong(ctx, cur->lastDelivery);
+		//RedisModule_ReplyWithLongLong(ctx, cur->deliveries);
+		RedisModule_ReplyWithString(ctx, cur->value);
+		total++;
+		cur = cur->next;
+	}
+	RedisModule_ReplySetArrayLength(ctx, total);
+	
+	return REDISMODULE_OK;
+}
+
 /**
- * Pops 1 or more messages from the given key
+ * Usage: POP [ COUNT n ] <key1> [ <key2> [ ... ] ]
  */
 int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
-	struct RQueueObject *rqueue;
-	struct Msg *newmsg;
-	int count = argc - 2; // count of new messages being pushed
+	if (argc < 2) return RedisModule_WrongArity(ctx);
 
-	if (argc < 3) return RedisModule_WrongArity(ctx);
+	RedisModule_AutoMemory(ctx);
 
-	RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
-
-   RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ|REDISMODULE_WRITE);
-   int type = RedisModule_KeyType(key);
+	// Retrieve the key content
+	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ|REDISMODULE_WRITE);
+    int type = RedisModule_KeyType(key);
    
 	if(type == REDISMODULE_KEYTYPE_EMPTY){
-		// Key doesn't exist. Create...
-		rqueue = RedisModule_Alloc(sizeof(*rqueue));
-		rqueue->nextid = 1;
-		initQueue(&rqueue->undelivered);
-		initQueue(&rqueue->delivered);
-		RedisModule_ModuleTypeSetValue(key, RQueueRedisType, rqueue);
-	} else if(RedisModule_ModuleTypeGetType(key) == RQueueRedisType){
-		// key exists. Get and update
-		rqueue = RedisModule_ModuleTypeGetValue(key);
-	} else {
-		// Key exists, but it's not an RQueueObject!!!
+		return RedisModule_ReplyWithNull(ctx);
+	}
+	
+	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
 		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
-	// create the new message
-	newmsg = RedisModule_Alloc(sizeof(*newmsg) * count);
-
-	// Init the new nodes
-	for(int i = 0, j = 1; i < count; i++, j++){
-		newmsg[i].id = rqueue->nextid++;
-		newmsg[i].delivered = 0;
-		newmsg[i].next = (
-			j < count ?
-			&newmsg[j] :
-			NULL
-		);
-		newmsg[i].value = argv[2 + i]; 
-	}
+	struct RQueueObject *rqueue = RedisModule_ModuleTypeGetValue(key);
 
 	if(rqueue->undelivered.first == NULL){
-		rqueue->undelivered.first = &newmsg[0];
-	} else {
-		rqueue->undelivered.last->next = &newmsg[0];
+		return RedisModule_ReplyWithNull(ctx);
 	}
-	rqueue->undelivered.last = &newmsg[count - 1];
-	rqueue->undelivered.len += count;
 
-	RedisModule_ReplyWithArray(ctx,3);
-	RedisModule_ReplyWithLongLong(ctx, rqueue->nextid - 1);
-	RedisModule_ReplyWithLongLong(ctx, rqueue->undelivered.len);
-	RedisModule_ReplyWithLongLong(ctx, rqueue->delivered.len);
+	struct  Msg *topop = rqueue->undelivered.first;
+	topop->lastDelivery = mstime();
+	topop->deliveries += 1;
+	
+	// Update "undelivered" queue
+	rqueue->undelivered.first = topop->next;
+	rqueue->undelivered.len -= 1;
+
+	// Update "delivered" queue
+	if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
+		rqueue->delivered.first = rqueue->delivered.last = topop;
+	} else {
+		rqueue->delivered.last->next = topop;
+		rqueue->delivered.last = topop;
+	}
+	rqueue->delivered.len += 1;
+	topop->next = NULL;
+
+	// Reply
+	RedisModule_ReplyWithArray(ctx, 3);
+	RedisModule_ReplyWithLongLong(ctx, topop->id);
+	RedisModule_ReplyWithLongLong(ctx, topop->created);
+	RedisModule_ReplyWithString(ctx, topop->value);
 
 	return REDISMODULE_OK;
 }
@@ -351,17 +374,21 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 	if (RedisModule_CreateCommand(ctx,"mq.push", pushCommand,"write deny-oom",1,1,1) == REDISMODULE_ERR)
       return REDISMODULE_ERR;
 
-	// register xq.parse - the default registration syntax
+	if (RedisModule_CreateCommand(ctx,"mq.pop", popCommand,"write",1,1,1) == REDISMODULE_ERR)
+		return REDISMODULE_ERR;
+
+	// register xq.info - the default registration syntax
 	if (RedisModule_CreateCommand(ctx, "mq.info", infoCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
 		return REDISMODULE_ERR;
 	}
 
-  // register xq.hgetset - using the shortened utility registration macro
-  RMUtil_RegisterWriteCmd(ctx, "mq.hgetset", HGetSetCommand);
+	// register xq.parse - the default registration syntax
+	if (RedisModule_CreateCommand(ctx, "mq.range", rangeCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
+		return REDISMODULE_ERR;
+	}
 
-  // register the unit test
-  RMUtil_RegisterWriteCmd(ctx, "mq.test", TestModule);
-
+	// register the unit test
+	RMUtil_RegisterWriteCmd(ctx, "mq.test", TestModule);
 	
 
 	return REDISMODULE_OK;

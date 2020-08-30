@@ -4,3 +4,5 @@
 *.db
 .vscode
 rmutil/test_vector
+bin
+dump.rdb

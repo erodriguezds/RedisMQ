@@ -2,17 +2,35 @@
 
 A Redis module for implementing better and truly reliable message broking within Redis.
 
-## The ReliableQueue data structure
+## The "Reliable Queue" data structure
 
-This module it's all about the ReliableQueue: a single and simple data structure to implement reliable, and practical, queues in Redis.
+The essence of this module is the "Reliable Queue" data structure ("RQUEUE" from now on). This is a new data structure registered by the module into your Redis instance as a new data type. The data structure itself is very simple: It's essentially a "Queue" (a FIFO list), composed of 2 internal linked-lists : a main list for "undelivered" (never-delivered) messages, and a 2nd list of "delivered" ("at-least-once") messages.
 
-### What about the "Reliable queue pattern"?
+When you **PUSH** new elements into an RQUEUE key, they get allocated into the main "undelivered" list. A Redis-Streams-like ID is assigned and returned for every item pushed.
 
-The "Reliable queue pattern" described at https://redis.io/commands/rpoplpush only offers a solution for half of the problem (I'm not going to explain it here. Please read the pattern, if you haven't, and you'll know what can be done with the pattern). The other half without a (decent) solution is: what do we do with the messages/tasks that were never removed from the "processing" queue (because, for example, the consumer failed to process it)? You might be thinking: "Easy, dummy, you need a different consumer for consuming the "failed" messages frrom the "processing" queue"... to which I'd reply: "Great, dummy, but... how can you tell how much time those failed messages have been hanging in there in the "processing" queue? Maybe those messages were just poped-out from our actual queue, and the consumers are still processing them... If you "recover" (POP) those "maybe failed / maybe still processing" messages , and process them, you might end up having the messages being processed more than once!!!"... To which you might start having weird ideas like having the messages enveloped inside a JSON, to which you could add all the metadata you whish... and then.... forget it, my friend... all that shitty workarounds you're thinking right now should be handled by your message broker, in our case: Redis... and Redis is not even an actual message broker!!! until now...
+When you **POP** elements out of the RQUEUE, you get the ID and the payload of every poped element (as you would expect). However, the poped/returned elements don't really get deallocated from the RQUEUE internal memory. What really happens under the hood is that the poped/returned elements are poped out from the main "undelivered" list, and moved to the internal "delivered" (at-least-once) list, and stand there until you **ACK**nowledge them.
 
-### Gimme the details about this "ReliableQueue" data structure!!!
+When you **ACK**nowledge an item by it's given ID, the element is then removed/deallocated from the "delivered" list, and the memory is freed.
 
+If you have worked with Redis Streams, you might find all this very familiar. Well... most of the workflows and commands are heavily inspired by Redis streams... but the memory management is very different. As you might know, the Redis Stream is an append-only-log-like data structure... the memory consumed by such structure just goes up and up as you "stream" (add) more elements... in order to free some memory, you have to manually trim your log... our RQUEUE data structure, in the other hand, is... well... you guessed'it.... A QUEUE!!! It only consumes memory as long as you have unprocessed/unacknowleded elements in the queue. 
 
+### Commands
+
+#### MQ.PUSH
+##### Usage: MQ.PUSH   *key*   *elem1*  [ *elem2* [ ... ] ]
+
+Pushes 1 or more elements into the RQUEUE stored at key. If key does not exist, it is created as empty RQUEUE before performing the push operations. When key holds a value that is not a list, an error is returned.
+
+As already implied above, it is possible to push multiple elements using a single command call just specifying multiple arguments at the end of the command. Elements are inserted one after the other to the end of the queue, from the leftmost element to the rightmost element.
+
+#### MQ.POP
+##### Usage: MQ.POP   *count*   *key*
+
+Pops *count* elements from the RQUEUE stored at *key*. If key does not exists, *nil* is returned. If key is NOT an RQUEUE type, an error is returned.
+
+##### Returned value: Array reply
+
+This command returns an array of *count* elements, where every element is also an array of 2 sub-elements: the ID of a payload, and the paylod.
 
 ### 1. redismodule.h
 

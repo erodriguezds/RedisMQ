@@ -4,151 +4,16 @@
 #include "../rmutil/strings.h"
 #include "../rmutil/test_util.h"
 #include "./module.h"
+#include "./rqueue.h"
 
 static RedisModuleType *RQueueRedisType;
 #define RQUEUE_ENCODING_VERSION 0
 
-/* Return the UNIX time in microseconds */
-long long ustime(void) {
-    struct timeval tv;
-    long long ust;
-
-    gettimeofday(&tv, NULL);
-    ust = ((long long)tv.tv_sec)*1000000;
-    ust += tv.tv_usec;
-    return ust;
-}
-
-/* Return the UNIX time in milliseconds */
-mstime_t mstime(void) {
-	struct timeval tv;
-    long long ust;
-
-    gettimeofday(&tv, NULL);
-    ust = ((long long)tv.tv_sec)*1000000;
-    ust += tv.tv_usec;
-
-    return ust/1000;
-}
-
-/* Generate the next item ID given the previous one. If the current
- * milliseconds Unix time is greater than the previous one, just use this
- * as time part and start with sequence part of zero. Otherwise we use the
- * previous time (and never go backward) and increment the sequence. */
-void setNextMsgID(struct MsgID *last_id, struct MsgID *new_id) {
-    uint64_t ms = mstime();
-    if (ms > last_id->ms) {
-        new_id->ms = ms;
-        new_id->seq = 1;
-    } else {
-        *new_id = *last_id;
-		if (new_id->seq == UINT64_MAX) {
-			if (new_id->ms == UINT64_MAX) {
-				/* Special case where 'new_id' is the last possible streamID... */
-				new_id->ms = new_id->seq = 0;
-			} else {
-				new_id->ms++;
-				new_id->seq = 0;
-			}
-		} else {
-			new_id->seq++;
-		}
-    }
-}
-
-//TODO
-void QueueRDBSave(RedisModuleIO *io, void *ptr) {
-}
-
-//TODO: Implement RDBLoad
-void *QueueRDBLoad(RedisModuleIO *io, int encver) {
-	return NULL;
-}
-
-void QueueAofRewrite(RedisModuleIO *aof, RedisModuleString *key, void *value) {
-   struct RQueueObject *rqueue = value;
-   struct Msg *node;
-	 
-	node = rqueue->undelivered.first;
-   while(node) {
-   	RedisModule_EmitAOF(aof,"mq.push","sl",key,node->value);
-   	node = node->next;
-   }
-}
-
-void QueueReleaseObject(void *value) {
-	struct RQueueObject *rqueue = value;
-	struct Msg *cur, *next;
-
-	 // Free all undelivered message
-    cur = rqueue->undelivered.first;
-    while(cur) {
-		next = cur->next;
-		RedisModule_FreeString(NULL, cur->value);
-        RedisModule_Free(cur);
-        cur = next;
-    }
-
-	 // Free all delivered message
-    cur = rqueue->delivered.first;
-    while(cur) {
-        next = cur->next;
-        RedisModule_Free(cur);
-        cur = next;
-    }
-
-    RedisModule_Free(value);
-}
-
-
-/* EXAMPLE.PARSE [SUM <x> <y>] | [PROD <x> <y>]
-*  Demonstrates the automatic arg parsing utility.
-*  If the command receives "SUM <x> <y>" it returns their sum
-*  If it receives "PROD <x> <y>" it returns their product
-*/
-int ParseCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
-{
-	RedisModule_AutoMemory(ctx);
-
-  // we must have at least 4 args
-  if (argc < 4) {
-    return RedisModule_WrongArity(ctx);
-  }
-
-  // init auto memory for created strings
-  
-  long long x, y;
-
-  // If we got SUM - return the sum of 2 consecutive arguments
-  if (RMUtil_ParseArgsAfter("SUM", argv, argc, "ll", &x, &y) ==
-      REDISMODULE_OK) {
-    RedisModule_ReplyWithLongLong(ctx, x + y);
-    return REDISMODULE_OK;
-  }
-
-  // If we got PROD - return the product of 2 consecutive arguments
-  if (RMUtil_ParseArgsAfter("PROD", argv, argc, "ll", &x, &y) ==
-      REDISMODULE_OK) {
-    RedisModule_ReplyWithLongLong(ctx, x * y);
-    return REDISMODULE_OK;
-  }
-
-  // something is fishy...
-  RedisModule_ReplyWithError(ctx, "Invalid arguments");
-
-  return REDISMODULE_ERR;
-}
-
-void initQueue(struct Queue *queue){
-	queue->len = 0;
-	queue->first = NULL;
-	queue->last = NULL;
-}
-
 /**
  * Return info on a given queue
  */
-int qinfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
+int qinfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
 	RedisModule_AutoMemory(ctx);
 	if (argc != 2) return RedisModule_WrongArity(ctx);
 	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ);
@@ -161,7 +26,7 @@ int qinfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
-	struct RQueueObject *rqueue = RedisModule_ModuleTypeGetValue(key);
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
 
 	RedisModule_ReplyWithArray(ctx,6);
 
@@ -179,15 +44,17 @@ int qinfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 
 	return REDISMODULE_OK;
 }
+
+
 /**
  * mq.push <key> <msg1> [ <msg2> [...]]
  * Pushes 1 or more items into key
  */
-int qpushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
 
-	struct RQueueObject *rqueue;
+	rqueue_t *rqueue;
 	struct Msg *newmsg;
 	int count = argc - 2; // count of new messages being pushed
 
@@ -275,7 +142,7 @@ int rangeCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
-	struct RQueueObject *rqueue = RedisModule_ModuleTypeGetValue(key);
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
 
 	struct Msg *cur = (
 		RMUtil_StringEqualsCaseC(argv[2], "PENDING") ?
@@ -303,16 +170,19 @@ int rangeCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 }
 
 /**
- * Usage: POP [ COUNT n ] <key1> [ <key2> [ ... ] ]
+ * Usage: POP <count> <key>
+ * 
+ * Pops <count> elements from the reliable queue at <key>.
+ * The poped elements are placed into the internal "delivered" list, for
+ * later acknoledgment.
  */
-int qpopCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	RedisModule_AutoMemory(ctx);
 
-	if (argc < 2) return RedisModule_WrongArity(ctx);
+	if (argc < 3) return RedisModule_WrongArity(ctx);
 
-	// Retrieve the key content
-	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ|REDISMODULE_WRITE);
+	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[2], REDISMODULE_READ|REDISMODULE_WRITE);
     int type = RedisModule_KeyType(key);
    
 	if(type == REDISMODULE_KEYTYPE_EMPTY){
@@ -323,37 +193,62 @@ int qpopCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
-	struct RQueueObject *rqueue = RedisModule_ModuleTypeGetValue(key);
+	// Retrieve the key content
+	long long count = 1, actually_poped = 0;
+
+	if(RMUtil_ParseArgs(argv, argc, 1, "l", &count) != REDISMODULE_OK){
+		return RedisModule_ReplyWithError(ctx, "usage: MQ.POP <count:uint> <key:string>");
+	}
+
+	if(count <= 0){
+		return RedisModule_ReplyWithError(ctx, "count must be >= 1");
+	}
+
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
 
 	if(rqueue->undelivered.first == NULL){
 		return RedisModule_ReplyWithNull(ctx);
 	}
 
-	struct  Msg *topop = rqueue->undelivered.first;
-	topop->lastDelivery = mstime();
-	topop->deliveries += 1;
-	
-	// Update "undelivered" queue
-	rqueue->undelivered.first = topop->next;
-	rqueue->undelivered.len -= 1;
+	struct Msg *topop = rqueue->undelivered.first,
+		*next;
 
-	// Update "delivered" queue
-	if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
-		rqueue->delivered.first = rqueue->delivered.last = topop;
-	} else {
-		rqueue->delivered.last->next = topop;
-		rqueue->delivered.last = topop;
+	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+	while (count > 0 && topop != NULL)
+	{
+		next = topop->next;
+		topop->lastDelivery = mstime();
+		topop->deliveries += 1;
+
+		// Update "undelivered" queue
+		rqueue->undelivered.first = topop->next;
+		rqueue->undelivered.len -= 1;
+
+		// Update "delivered" queue
+		if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
+			rqueue->delivered.first = rqueue->delivered.last = topop;
+		} else {
+			rqueue->delivered.last->next = topop;
+			rqueue->delivered.last = topop;
+		}
+		rqueue->delivered.len += 1;
+		topop->next = NULL;
+
+		// Finally: reply with a 2-element-array with: MsgID and the payload
+		RedisModule_ReplyWithArray(ctx, 2);
+		RedisModule_ReplyWithString(
+			ctx,
+			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, topop->id.ms, topop->id.seq)
+		);
+		RedisModule_ReplyWithString(ctx, topop->value);
+
+		// Move-on to the next element to pop
+		count -= 1;
+		actually_poped += 1;
+		topop = next;
 	}
-	rqueue->delivered.len += 1;
-	topop->next = NULL;
 
-	// Reply
-	RedisModule_ReplyWithArray(ctx, 2);
-	RedisModule_ReplyWithString(
-		ctx,
-		RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, topop->id.ms, topop->id.seq)
-	);
-	RedisModule_ReplyWithString(ctx, topop->value);
+	RedisModule_ReplySetArrayLength(ctx, actually_poped);
 
 	return REDISMODULE_OK;
 }
@@ -385,10 +280,10 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
-	struct RQueueObject *rqueue = RedisModule_ModuleTypeGetValue(key);
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
 
 	if(rqueue->delivered.first == NULL){
-		return RedisModule_ReplyWithEmptyArray(ctx);
+		return RedisModule_ReplyWithArray(ctx,0);
 	}
 
 	struct Msg *cur, *prev, *next;
@@ -410,18 +305,18 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		while(cur){
 			next = cur->next;
 			if(cur->id.ms == id.ms && cur->id.seq == id.seq){
-				if(prev != NULL){
-					// Link the previous node to the next node
-					prev->next = cur->next;
-				} else {
-					// Previous node is NULL, which means we're on the first node
+
+				if(cur == rqueue->delivered.first){
 					rqueue->delivered.first = cur->next;
 				}
 
-				if(cur->next == NULL){
-					// The node we're about to remove is the last node, so, we
-					//need to update the queue's last node to our previous node
+				if(cur == rqueue->delivered.last){
 					rqueue->delivered.last = prev;
+				}
+				
+				if(prev != NULL){
+					// Link previous node to next node
+					prev->next = cur->next;
 				}
 				
 				RedisModule_FreeString(NULL, cur->value);
@@ -440,6 +335,98 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	return REDISMODULE_OK;
 }
+
+
+
+
+
+
+//TODO
+void QueueRDBSave(RedisModuleIO *io, void *ptr) {
+}
+
+//TODO: Implement RDBLoad
+void *QueueRDBLoad(RedisModuleIO *io, int encver) {
+	return NULL;
+}
+
+void QueueAofRewrite(RedisModuleIO *aof, RedisModuleString *key, void *value) {
+   rqueue_t *rqueue = value;
+   struct Msg *node;
+	 
+	node = rqueue->undelivered.first;
+   while(node) {
+   	RedisModule_EmitAOF(aof,"mq.push","sl",key,node->value);
+   	node = node->next;
+   }
+}
+
+void QueueReleaseObject(void *value) {
+	rqueue_t *rqueue = value;
+	struct Msg *cur, *next;
+
+	 // Free all undelivered message
+    cur = rqueue->undelivered.first;
+    while(cur) {
+		next = cur->next;
+		RedisModule_FreeString(NULL, cur->value);
+        RedisModule_Free(cur);
+        cur = next;
+    }
+
+	 // Free all delivered message
+    cur = rqueue->delivered.first;
+    while(cur) {
+        next = cur->next;
+        RedisModule_Free(cur);
+        cur = next;
+    }
+
+    RedisModule_Free(value);
+}
+
+
+/* EXAMPLE.PARSE [SUM <x> <y>] | [PROD <x> <y>]
+*  Demonstrates the automatic arg parsing utility.
+*  If the command receives "SUM <x> <y>" it returns their sum
+*  If it receives "PROD <x> <y>" it returns their product
+*/
+int ParseCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+	RedisModule_AutoMemory(ctx);
+
+  // we must have at least 4 args
+  if (argc < 4) {
+    return RedisModule_WrongArity(ctx);
+  }
+
+  // init auto memory for created strings
+  
+  long long x, y;
+
+  // If we got SUM - return the sum of 2 consecutive arguments
+  if (RMUtil_ParseArgsAfter("SUM", argv, argc, "ll", &x, &y) ==
+      REDISMODULE_OK) {
+    RedisModule_ReplyWithLongLong(ctx, x + y);
+    return REDISMODULE_OK;
+  }
+
+  // If we got PROD - return the product of 2 consecutive arguments
+  if (RMUtil_ParseArgsAfter("PROD", argv, argc, "ll", &x, &y) ==
+      REDISMODULE_OK) {
+    RedisModule_ReplyWithLongLong(ctx, x * y);
+    return REDISMODULE_OK;
+  }
+
+  // something is fishy...
+  RedisModule_ReplyWithError(ctx, "Invalid arguments");
+
+  return REDISMODULE_ERR;
+}
+
+
+
+
 
 // Test the the PARSE command
 int testParse(RedisModuleCtx *ctx) {
@@ -505,10 +492,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 
    if (RQueueRedisType == NULL) return REDISMODULE_ERR;
 
-	if (RedisModule_CreateCommand(ctx,"mq.qpush", qpushCommand,"write deny-oom",1,1,1) == REDISMODULE_ERR)
+	if (RedisModule_CreateCommand(ctx,"mq.push", pushCommand,"write deny-oom",1,1,1) == REDISMODULE_ERR)
       return REDISMODULE_ERR;
 
-	if (RedisModule_CreateCommand(ctx,"mq.qpop", qpopCommand,"write",1,1,1) == REDISMODULE_ERR)
+	if (RedisModule_CreateCommand(ctx,"mq.pop", popCommand,"write",2,2,1) == REDISMODULE_ERR)
 		return REDISMODULE_ERR;
 
 	if (RedisModule_CreateCommand(ctx,"mq.ack", ackCommand,"write",1,1,1) == REDISMODULE_ERR)
@@ -520,7 +507,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 	}
 
 	// register xq.parse - the default registration syntax
-	if (RedisModule_CreateCommand(ctx, "mq.qrange", rangeCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
+	if (RedisModule_CreateCommand(ctx, "mq.range", rangeCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
 		return REDISMODULE_ERR;
 	}
 

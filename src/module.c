@@ -1,10 +1,12 @@
 #include <sys/time.h>
+#define REDISMODULE_EXPERIMENTAL_API
 #include "../redismodule.h"
 #include "../rmutil/util.h"
 #include "../rmutil/strings.h"
 #include "../rmutil/test_util.h"
 #include "./module.h"
 #include "./rqueue.h"
+#include "./error.h"
 
 static RedisModuleType *RQueueRedisType;
 #define RQUEUE_ENCODING_VERSION 0
@@ -55,7 +57,7 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
 
 	rqueue_t *rqueue;
-	struct Msg *newmsg;
+	msg_t *newmsg;
 	int count = argc - 2; // count of new messages being pushed
 
 	if (argc < 3) return RedisModule_WrongArity(ctx);
@@ -85,6 +87,7 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	// Init the new nodes
 	RedisModule_ReplyWithArray(ctx, count);
+
 	for(int i = 0, j = 1; i < count; i++, j++){
 		if(i == 0){
 			setNextMsgID(&rqueue->last_id, &newmsg[i].id);
@@ -97,6 +100,11 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 			j < count ?
 			&newmsg[j] :
 			NULL
+		);
+		newmsg[i].prev = (
+			i > 0 ?
+			&newmsg[i - 1] :
+			rqueue->undelivered.last
 		);
 		newmsg[i].value = RedisModule_CreateStringFromString(NULL, argv[2 + i]);
 		RedisModule_ReplyWithString(
@@ -124,7 +132,14 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	return REDISMODULE_OK;
 }
 
-int rangeCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+/**
+ * MQ.INSPECT <key> [ PENDING ] <start> [ <count> ]
+ * 
+ * Inspects <count> elements at the "undelivered" queue, starting at <start>.
+ * If PENDING is provided after the <key> to inspect, then the elements at the
+ * "delivered" queue will be inspected instead.
+ **/
+int inspectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
 
@@ -142,29 +157,90 @@ int rangeCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
-	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
+	long long start = 0, count, pos = 0, outputed = 0;
+	int pending = RMUtil_StringEqualsCaseC(argv[2], "PENDING");
 
-	struct Msg *cur = (
-		RMUtil_StringEqualsCaseC(argv[2], "PENDING") ?
-		rqueue->delivered.first :
-		rqueue->undelivered.first
-	);
-
-	long total = 0;
-	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
-	while(cur){
-		RedisModule_ReplyWithArray(ctx,2);
-		RedisModule_ReplyWithString(
-			ctx,
-			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, cur->id.ms, cur->id.seq)
-		);
-		//RedisModule_ReplyWithLongLong(ctx, cur->lastDelivery);
-		//RedisModule_ReplyWithLongLong(ctx, cur->deliveries);
-		RedisModule_ReplyWithString(ctx, cur->value);
-		total++;
-		cur = cur->next;
+	if(RMUtil_ParseArgs(argv, argc, (pending ? 3 : 2), "ll", &start, &count) != REDISMODULE_OK){
+		return RedisModule_ReplyWithError(ctx, MQ_ERROR_INSPECT_USAGE);
 	}
-	RedisModule_ReplySetArrayLength(ctx, total);
+
+	if(count <= 0){
+		return RedisModule_ReplyWithError(ctx, MQ_ERROR_INSPECT_USAGE);
+	}
+
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
+	queue_t *queue = (
+		pending ?
+		&rqueue->delivered :
+		&rqueue->undelivered
+	);
+	msg_t *cur = NULL;
+
+	// Set the starting node
+	if(start >= 0){
+
+		if(start > (queue->len - 1)){
+			return RedisModule_ReplyWithArray(ctx, 0);
+		}
+
+		// Walk the list starting with the fisrt node
+		cur = queue->first;
+		while (pos < start && cur->next != NULL)
+		{
+			cur = cur->next;
+			pos += 1;
+		}
+	} else {
+		if(-start > queue->len){
+			return RedisModule_ReplyWithArray(ctx, 0);
+		}
+
+		// Walk the list backwards, from the last node to the first
+		cur = queue->last;
+		pos = -1;
+		while (pos > start && cur->prev != NULL)
+		{
+			cur = cur->prev;
+			pos -= 1;
+		}
+	}
+
+	// Now, walk the list from the current node, onwards
+	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+
+	if(pending){
+		mstime_t now = mstime();
+		while (cur && outputed < count)
+		{
+			RedisModule_ReplyWithArray(ctx,5);
+			RedisModule_ReplyWithString(
+				ctx,
+				RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, cur->id.ms, cur->id.seq)
+			);
+			RedisModule_ReplyWithString(ctx, cur->value);
+			RedisModule_ReplyWithLongLong(ctx, cur->lastDelivery);
+			RedisModule_ReplyWithLongLong(ctx, now - cur->lastDelivery);
+			RedisModule_ReplyWithLongLong(ctx, cur->deliveries);
+			outputed += 1;
+			cur = cur->next;
+		}
+	} else {
+		while(cur && outputed < count)
+		{
+			RedisModule_ReplyWithArray(ctx,2);
+			RedisModule_ReplyWithString(
+				ctx,
+				RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, cur->id.ms, cur->id.seq)
+			);
+			//RedisModule_ReplyWithLongLong(ctx, cur->lastDelivery);
+			//RedisModule_ReplyWithLongLong(ctx, cur->deliveries);
+			RedisModule_ReplyWithString(ctx, cur->value);
+			outputed += 1;
+			cur = cur->next;
+		}
+	}
+	
+	RedisModule_ReplySetArrayLength(ctx, outputed);
 	
 	return REDISMODULE_OK;
 }
@@ -194,7 +270,7 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	}
 
 	// Retrieve the key content
-	long long count = 1, actually_poped = 0;
+	long long count = 1;
 
 	if(RMUtil_ParseArgs(argv, argc, 1, "l", &count) != REDISMODULE_OK){
 		return RedisModule_ReplyWithError(ctx, "usage: MQ.POP <count:uint> <key:string>");
@@ -204,55 +280,80 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx, "count must be >= 1");
 	}
 
-	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
-
-	if(rqueue->undelivered.first == NULL){
-		return RedisModule_ReplyWithNull(ctx);
-	}
-
-	struct Msg *topop = rqueue->undelivered.first,
-		*next;
-
-	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
-	while (count > 0 && topop != NULL)
-	{
-		next = topop->next;
-		topop->lastDelivery = mstime();
-		topop->deliveries += 1;
-
-		// Update "undelivered" queue
-		rqueue->undelivered.first = topop->next;
-		rqueue->undelivered.len -= 1;
-
-		// Update "delivered" queue
-		if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
-			rqueue->delivered.first = rqueue->delivered.last = topop;
-		} else {
-			rqueue->delivered.last->next = topop;
-			rqueue->delivered.last = topop;
-		}
-		rqueue->delivered.len += 1;
-		topop->next = NULL;
-
-		// Finally: reply with a 2-element-array with: MsgID and the payload
-		RedisModule_ReplyWithArray(ctx, 2);
-		RedisModule_ReplyWithString(
-			ctx,
-			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, topop->id.ms, topop->id.seq)
-		);
-		RedisModule_ReplyWithString(ctx, topop->value);
-
-		// Move-on to the next element to pop
-		count -= 1;
-		actually_poped += 1;
-		topop = next;
-	}
-
-	RedisModule_ReplySetArrayLength(ctx, actually_poped);
-
-	return REDISMODULE_OK;
+	return popAndReply(
+		RedisModule_ModuleTypeGetValue(key),
+		count,
+		ctx
+	);
 }
 
+/**
+ * Usage: BPOP <count> <timeout> <key>
+ * 
+ * Pops <count> elements from the reliable queue at <key>.
+ * The poped elements are placed into the internal "delivered" list, for
+ * later acknoledgment.
+ */
+/*int bpopCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+	RedisModule_AutoMemory(ctx);
+
+	if (argc < 3) return RedisModule_WrongArity(ctx);
+
+	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[2], REDISMODULE_READ|REDISMODULE_WRITE);
+    int type = RedisModule_KeyType(key);
+   
+	if(type == REDISMODULE_KEYTYPE_EMPTY){
+		return RedisModule_ReplyWithNull(ctx);
+	}
+	
+	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
+	}
+
+	// Retrieve the key content
+	long long count = 1,
+		timeout = 0,
+		actually_poped = 0;
+
+	if(RMUtil_ParseArgs(argv, argc, 1, "ll", &count, &timeout) != REDISMODULE_OK){
+		return RedisModule_ReplyWithError(ctx, "usage: MQ.BPOP <count:uint> <timeout:uint> <key:string>");
+	}
+
+	if(count <= 0){
+		return RedisModule_ReplyWithError(ctx, "count must be >= 1");
+	}
+
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
+
+	if(rqueue->undelivered.first != NULL){
+		return popAndReply(rqueue, count, ctx);
+	}
+
+	//Block the client
+	RedisModuleBlockedClient *bc = RedisModule_BlockClient(
+		ctx,
+		bpop_reply,
+		bpop_timeout,
+		bpop_freeData,
+		timeout
+	);
+
+    RedisModule_SetDisconnectCallback(bc, bpop_disconnected);
+
+    // Now that we setup a blocking client, we need to pass the control
+    // to the thread. However we need to pass arguments to the thread:
+    // the delay and a reference to the blocked client handle.
+    void **targ = RedisModule_Alloc(sizeof(void*)*2);
+    targ[0] = bc;
+    targ[1] = (void*)(unsigned long) delay;
+
+    if (pthread_create(&tid,NULL,HelloBlock_ThreadMain,targ) != 0) {
+        RedisModule_AbortBlock(bc);
+        return RedisModule_ReplyWithError(ctx,"-ERR Can't start thread");
+    }
+    return REDISMODULE_OK;
+}*/
 
 /**
  * ACK <queue> <msgid1> [ <msgid2> [ ... ] ]
@@ -286,8 +387,8 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithArray(ctx,0);
 	}
 
-	struct Msg *cur, *prev, *next;
-	struct MsgID id;
+	msg_t *cur, *next;
+	msgid_t id;
 	char *idptr;
 	size_t idlen;
 	char idbuf[128];
@@ -301,22 +402,22 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		idbuf[idlen < 128 ? idlen : 127] = (char) 0;
 		sscanf(idbuf, MSG_ID_FORMAT, &id.ms, &id.seq);
 		cur = rqueue->delivered.first;
-		prev = NULL;
+		//prev = NULL;
 		while(cur){
 			next = cur->next;
 			if(cur->id.ms == id.ms && cur->id.seq == id.seq){
+
+				if(cur->prev != NULL){
+					// Link previous node to next node
+					cur->prev->next = cur->next;
+				}
 
 				if(cur == rqueue->delivered.first){
 					rqueue->delivered.first = cur->next;
 				}
 
 				if(cur == rqueue->delivered.last){
-					rqueue->delivered.last = prev;
-				}
-				
-				if(prev != NULL){
-					// Link previous node to next node
-					prev->next = cur->next;
+					rqueue->delivered.last = cur->prev;
 				}
 				
 				RedisModule_FreeString(NULL, cur->value);
@@ -326,7 +427,6 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 				RedisModule_ReplyWithString(ctx, argv[i]);
 				break;
 			}
-			prev = cur;
 			cur = next;
 		};
 	}
@@ -335,11 +435,6 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	return REDISMODULE_OK;
 }
-
-
-
-
-
 
 //TODO
 void QueueRDBSave(RedisModuleIO *io, void *ptr) {
@@ -352,7 +447,7 @@ void *QueueRDBLoad(RedisModuleIO *io, int encver) {
 
 void QueueAofRewrite(RedisModuleIO *aof, RedisModuleString *key, void *value) {
    rqueue_t *rqueue = value;
-   struct Msg *node;
+   msg_t *node;
 	 
 	node = rqueue->undelivered.first;
    while(node) {
@@ -363,7 +458,7 @@ void QueueAofRewrite(RedisModuleIO *aof, RedisModuleString *key, void *value) {
 
 void QueueReleaseObject(void *value) {
 	rqueue_t *rqueue = value;
-	struct Msg *cur, *next;
+	msg_t *cur, *next;
 
 	 // Free all undelivered message
     cur = rqueue->undelivered.first;
@@ -507,7 +602,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 	}
 
 	// register xq.parse - the default registration syntax
-	if (RedisModule_CreateCommand(ctx, "mq.range", rangeCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
+	if (RedisModule_CreateCommand(ctx, "mq.inspect", inspectCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
 		return REDISMODULE_ERR;
 	}
 

@@ -10,44 +10,60 @@ typedef long long mstime_t; /* millisecond time type. */
  * a sequence counter. IDs generated in the same millisecond (or in a past
  * millisecond if the clock jumped backward) will use the millisecond time
  * of the latest generated ID and an incremented sequence. */
-struct MsgID {
+typedef struct msgid_t {
     uint64_t ms;        /* Unix time in milliseconds. */
     uint64_t seq;       /* Sequence number. */
-};
+} msgid_t;
 
-struct Msg {
-    struct MsgID id;
+typedef struct msg_t {
+    msgid_t id;
+    RedisModuleString *value;
+    struct msg_t *next;
+    struct msg_t *prev;
     uint deliveries; /* how many times the msg has being delivered*/
     mstime_t lastDelivery; /* Last time the msg was delivered */
-    struct Msg *next;
-    RedisModuleString *value;
-};
+} msg_t;
 
-struct Queue {
-    struct Msg *first; /* First to be served */
-    struct Msg *last;
+typedef struct queue_t {
+    msg_t *first; /* First to be served */
+    msg_t *last;
     size_t len; /* Number of elements added. */
-};
+} queue_t;
 
 /**
  * Reliable Queue Object 
  */
 typedef struct rqueue_t {
-    struct MsgID last_id;       /* Zero if there are yet no items. */
-    struct Queue undelivered;
-    struct Queue delivered; /* Queue of messages that has being delivered at-least-one */
+    msgid_t last_id;       /* Zero if there are yet no items. */
+    queue_t undelivered;
+    queue_t delivered; /* Queue of messages that has being delivered at-least-one */
 } rqueue_t;
+
+typedef struct bpopclient_t {
+    
+} bpopclient_t;
 
 long long mstime(void);
 
 /* Return the UNIX time in milliseconds */
 mstime_t mstime(void);
 
-void initQueue(struct Queue *queue);
+void initQueue(queue_t *queue);
 
 /* Generate the next item ID given the previous one. If the current
  * milliseconds Unix time is greater than the previous one, just use this
  * as time part and start with sequence part of zero. Otherwise we use the
  * previous time (and never go backward) and increment the sequence. */
-void setNextMsgID(struct MsgID *last_id, struct MsgID *new_id);
+void setNextMsgID(msgid_t *last_id, msgid_t *new_id);
 
+/**
+ * Pops up to "count" messages from the reliable queue at "rqueue", and replies
+ * to the Redis client
+ */
+int popAndReply(rqueue_t *rqueue, long long count, RedisModuleCtx *ctx);
+
+/* Blocking commands callbacks */
+int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
+int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
+void bpop_freeData(RedisModuleCtx *ctx, void *privdata);
+void bpop_disconnected(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc);

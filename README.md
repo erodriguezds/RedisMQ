@@ -2,7 +2,17 @@
 
 A Redis module for implementing better and truly reliable message broking within Redis.
 
-## The "Reliable Queue" data structure
+## Table of contents
+1. [Data Structures](#data-structures)
+   1. [Reliable Queue](#reliable-queue)
+2. [Commands](#commands)
+    1. [MQ.PUSH](#mq.push)
+    2. [MQ.POP](#mq.pop)
+    3. [MQ.INSPECT](#mq.inspect)
+
+# Data Structures <a name="data-structures"></a>
+
+## The "Reliable Queue"<a name="reliable-queue"></a>
 
 The essence of this module is the "Reliable Queue" data structure ("RQUEUE" from now on). This is a new data structure registered by the module into your Redis instance as a new data type. The data structure itself is very simple: It's essentially a "Queue" (a FIFO list), composed of 2 internal linked-lists : a main list for "undelivered" (never-delivered) messages, and a 2nd list of "delivered" ("at-least-once") messages.
 
@@ -31,6 +41,51 @@ Pops *count* elements from the RQUEUE stored at *key*. If key does not exists, *
 ##### Returned value: Array reply
 
 This command returns an array of *count* elements, where every element is also an array of 2 sub-elements: the ID of a payload, and the paylod.
+
+#### MQ.INSPECT
+##### Usage: MQ.INSPECT   *key*   [ PENDING ]   *start*   *count*
+
+Inspects *count* elements at the "undelivered" queue, starting at *start*.
+If PENDING is provided after the *key* to inspect, then the elements at the
+"delivered" queue will be inspected instead.
+
+##### Reply
+Without the PENDING variant, you get an array of elemets standing at the "undelivered" queue, waiting to be poped, where every element is a 2-element-array with: the payload ID, and the payload itself:
+
+```bash
+127.0.0.1:6379> mq.inspect myreliable1 -2 2
+1) 1) "1599352749159-4"
+   2) "my message payload at position n - 1"
+2) 1) "1599352749159-5"
+   2) "my message payload at position n"
+```
+
+By using the PENDING variant, you'll get the elemets at the internal "delivered" (at-least-once) queue, also as an array of elements, where every element is a 5-element array indicating:
+1. ID of the payload
+2. The payload
+3. Unix timestamp (in milliseconds) of the last time the element was POPed, or RECOVERed. When elemets are RECOVERed (using the MQ.RECOVER command), this timestamp gets reset.
+4. Milliseconds elapsed since the element was poped or recovered. This counter is reset after a RECOVER.
+5. Total deliveries: total times the element has being delivered. This counter is incremented by 1 after every RECOVER.
+
+Example reply:
+```bash
+127.0.0.1:6379> mq.inspect micola PENDING 0 10
+1) 1) "1599530647574-5"
+   2) "msg1"
+   3) (integer) 1599530978782
+   4) (integer) 977698
+   5) (integer) 1
+2) 1) "1599530943310-2"
+   2) "msg1"
+   3) (integer) 1599531943097
+   4) (integer) 13383
+   5) (integer) 1
+3) 1) "1599530943310-3"
+   2) "msg2"
+   3) (integer) 1599531945573
+   4) (integer) 10907
+   5) (integer) 1
+```
 
 ### 1. redismodule.h
 

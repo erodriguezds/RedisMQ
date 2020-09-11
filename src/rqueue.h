@@ -19,7 +19,6 @@ typedef struct msg_t {
     msgid_t id;
     RedisModuleString *value;
     struct msg_t *next;
-    struct msg_t *prev;
     uint deliveries; /* how many times the msg has being delivered*/
     mstime_t lastDelivery; /* Last time the msg was delivered */
 } msg_t;

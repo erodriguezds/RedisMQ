@@ -101,11 +101,6 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 			&newmsg[j] :
 			NULL
 		);
-		newmsg[i].prev = (
-			i > 0 ?
-			&newmsg[i - 1] :
-			rqueue->undelivered.last
-		);
 		newmsg[i].value = RedisModule_CreateStringFromString(NULL, argv[2 + i]);
 		RedisModule_ReplyWithString(
 			ctx,
@@ -176,33 +171,21 @@ int inspectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	);
 	msg_t *cur = NULL;
 
+	if(start < 0){
+		start += queue->len;
+	}
+
 	// Set the starting node
-	if(start >= 0){
+	if(start < 0 || start > (queue->len - 1)){
+		return RedisModule_ReplyWithArray(ctx, 0);
+	}
 
-		if(start > (queue->len - 1)){
-			return RedisModule_ReplyWithArray(ctx, 0);
-		}
-
-		// Walk the list starting with the fisrt node
-		cur = queue->first;
-		while (pos < start && cur->next != NULL)
-		{
-			cur = cur->next;
-			pos += 1;
-		}
-	} else {
-		if(-start > queue->len){
-			return RedisModule_ReplyWithArray(ctx, 0);
-		}
-
-		// Walk the list backwards, from the last node to the first
-		cur = queue->last;
-		pos = -1;
-		while (pos > start && cur->prev != NULL)
-		{
-			cur = cur->prev;
-			pos -= 1;
-		}
+	// Walk the list starting with the fisrt node
+	cur = queue->first;
+	while (pos < start && cur->next != NULL)
+	{
+		cur = cur->next;
+		pos += 1;
 	}
 
 	// Now, walk the list from the current node, onwards
@@ -387,7 +370,7 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithArray(ctx,0);
 	}
 
-	msg_t *cur, *next;
+	msg_t *cur, *next, *prev;
 	msgid_t id;
 	char *idptr;
 	size_t idlen;
@@ -397,19 +380,22 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
 
 	for(int i = 2; i < argc; i++){
+
+		//parse the ID
 		idptr = RedisModule_StringPtrLen(argv[i], &idlen);
 		memcpy(idbuf, idptr, idlen);
 		idbuf[idlen < 128 ? idlen : 127] = (char) 0;
 		sscanf(idbuf, MSG_ID_FORMAT, &id.ms, &id.seq);
+
 		cur = rqueue->delivered.first;
-		//prev = NULL;
+		prev = NULL;
 		while(cur){
 			next = cur->next;
 			if(cur->id.ms == id.ms && cur->id.seq == id.seq){
 
-				if(cur->prev != NULL){
-					// Link previous node to next node
-					cur->prev->next = cur->next;
+				//Link previous node to next node
+				if(prev != NULL){
+					prev->next = cur->next;
 				}
 
 				if(cur == rqueue->delivered.first){
@@ -417,7 +403,7 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 				}
 
 				if(cur == rqueue->delivered.last){
-					rqueue->delivered.last = cur->prev;
+					rqueue->delivered.last = prev;
 				}
 				
 				RedisModule_FreeString(NULL, cur->value);

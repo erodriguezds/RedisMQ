@@ -413,11 +413,93 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 				RedisModule_ReplyWithString(ctx, argv[i]);
 				break;
 			}
+			prev = cur;
 			cur = next;
 		};
 	}
 
 	RedisModule_ReplySetArrayLength(ctx, removed);
+
+	return REDISMODULE_OK;
+}
+
+/**
+ * RECOVER <key> <count> <elapsed>
+ * 
+ * Recovers <count> elements from the <key> delivered queue that has been delivered
+ * and not acknoledged for <elapsed> milliseconds or more.
+ * 
+ * Returns: Array of messages recovered
+ */
+int recoverCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+	RedisModule_AutoMemory(ctx);
+
+	if (argc < 3) return RedisModule_WrongArity(ctx);
+
+	// Retrieve the key content
+	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ|REDISMODULE_WRITE);
+    int type = RedisModule_KeyType(key);
+   
+	if(type == REDISMODULE_KEYTYPE_EMPTY){
+		return RedisModule_ReplyWithNull(ctx);
+	}
+	
+	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
+	}
+
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
+
+	if(rqueue->delivered.first == NULL){
+		return RedisModule_ReplyWithArray(ctx,0);
+	}
+
+	long long count, elapsed, recovered = 0;
+	int pending = RMUtil_StringEqualsCaseC(argv[2], "PENDING");
+
+	if(RMUtil_ParseArgs(argv, argc, (pending ? 3 : 2), "ll", &count, &elapsed) != REDISMODULE_OK){
+		return RedisModule_ReplyWithError(ctx, MQ_ERROR_RECOVER_USAGE);
+	}
+
+	msg_t *cur = rqueue->delivered.first, *next; //, *prev;
+	mstime_t now = mstime();
+
+	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+
+	while (
+		cur &&
+		(now - cur->lastDelivery) >= elapsed &&
+		recovered < count
+	)
+	{
+		next = cur->next;
+
+		//Reply
+		RedisModule_ReplyWithArray(ctx, 2);
+		RedisModule_ReplyWithString(
+			ctx,
+			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, cur->id.ms, cur->id.seq)
+		);
+		RedisModule_ReplyWithString(ctx, cur->value);
+
+		//Update delivery info
+		cur->lastDelivery = now;
+		cur->deliveries += 1;
+		recovered += 1;
+
+		//Move current node to the end of the delivered queue
+		if(cur->next){
+			rqueue->delivered.first = cur->next;
+			rqueue->delivered.last->next = cur;
+			rqueue->delivered.last = cur;
+			cur->next = NULL;
+		}
+
+		cur = next;
+	}
+	
+	RedisModule_ReplySetArrayLength(ctx, recovered);
 
 	return REDISMODULE_OK;
 }
@@ -580,6 +662,9 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 		return REDISMODULE_ERR;
 
 	if (RedisModule_CreateCommand(ctx,"mq.ack", ackCommand,"write",1,1,1) == REDISMODULE_ERR)
+		return REDISMODULE_ERR;
+
+	if (RedisModule_CreateCommand(ctx,"mq.recover", recoverCommand,"write",1,1,1) == REDISMODULE_ERR)
 		return REDISMODULE_ERR;
 
 	// register xq.info - the default registration syntax

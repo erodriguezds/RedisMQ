@@ -12,7 +12,7 @@ long long ustime(void) {
     return ust;
 }
 
-/* Return the UNIX time in milliseconds */
+/* Return the current UNIX time in milliseconds */
 mstime_t mstime(void) {
 	struct timeval tv;
     long long ust;
@@ -76,18 +76,13 @@ int popAndReply(rqueue_t *rqueue, long long count, RedisModuleCtx *ctx)
 
 		// Update "undelivered" queue
 		rqueue->undelivered.first = topop->next;
-		if(rqueue->undelivered.first != NULL){
-			rqueue->undelivered.first->prev = NULL;
-		}
 		rqueue->undelivered.len -= 1;
 
 		// Update "delivered" queue
 		if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
 			rqueue->delivered.first = rqueue->delivered.last = topop;
-			topop->prev = NULL;
 		} else {
 			rqueue->delivered.last->next = topop;
-			topop->prev = rqueue->delivered.last;
 			rqueue->delivered.last = topop;
 		}
 		rqueue->delivered.len += 1;

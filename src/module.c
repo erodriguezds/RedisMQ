@@ -9,7 +9,6 @@
 #include "./error.h"
 
 static RedisModuleType *RQueueRedisType;
-#define RQUEUE_ENCODING_VERSION 0
 
 /**
  * Return info on a given queue
@@ -504,48 +503,9 @@ int recoverCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	return REDISMODULE_OK;
 }
 
-//TODO
-void QueueRDBSave(RedisModuleIO *io, void *ptr) {
-}
-
-//TODO: Implement RDBLoad
-void *QueueRDBLoad(RedisModuleIO *io, int encver) {
-	return NULL;
-}
-
 void QueueAofRewrite(RedisModuleIO *aof, RedisModuleString *key, void *value) {
-   rqueue_t *rqueue = value;
-   msg_t *node;
-	 
-	node = rqueue->undelivered.first;
-   while(node) {
-   	RedisModule_EmitAOF(aof,"mq.push","sl",key,node->value);
-   	node = node->next;
-   }
-}
-
-void QueueReleaseObject(void *value) {
-	rqueue_t *rqueue = value;
-	msg_t *cur, *next;
-
-	 // Free all undelivered message
-    cur = rqueue->undelivered.first;
-    while(cur) {
-		next = cur->next;
-		RedisModule_FreeString(NULL, cur->value);
-        RedisModule_Free(cur);
-        cur = next;
-    }
-
-	 // Free all delivered message
-    cur = rqueue->delivered.first;
-    while(cur) {
-        next = cur->next;
-        RedisModule_Free(cur);
-        cur = next;
-    }
-
-    RedisModule_Free(value);
+	//TODO
+	return;
 }
 
 
@@ -640,10 +600,10 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 	// Register the ReliableQueue Type
 	RedisModuleTypeMethods tm = {
 		.version = REDISMODULE_TYPE_METHOD_VERSION,
-    	.rdb_load = QueueRDBLoad,
-    	.rdb_save = QueueRDBSave,
+    	.rdb_load = RQueueRdbLoad,
+    	.rdb_save = RQueueRdbSave,
     	.aof_rewrite = QueueAofRewrite,
-    	.free = QueueReleaseObject
+    	.free = RQueueReleaseObject
 	};
 
    RQueueRedisType = RedisModule_CreateDataType(

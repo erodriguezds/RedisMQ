@@ -55,6 +55,20 @@ void setNextMsgID(msgid_t *last_id, msgid_t *new_id) {
     }
 }
 
+/**
+ * Creates and initializes a fresh new RQUEUE object
+ * @return rqueue_t * Pointer to the created object
+ */
+rqueue_t *createRQueueObject(){
+	rqueue_t *rqueue = RedisModule_Alloc(sizeof(*rqueue));
+	rqueue->last_id.ms = 0;
+    rqueue->last_id.seq = 0;
+	initQueue(&rqueue->undelivered);
+	initQueue(&rqueue->delivered);
+	
+	return rqueue;
+}
+
 int popAndReply(rqueue_t *rqueue, long long count, RedisModuleCtx *ctx)
 {
 	if(rqueue->undelivered.first == NULL){
@@ -105,6 +119,134 @@ int popAndReply(rqueue_t *rqueue, long long count, RedisModuleCtx *ctx)
 	RedisModule_ReplySetArrayLength(ctx, actually_poped);
 
 	return REDISMODULE_OK;
+}
+
+/* ============= RDB and AOF callbacks ==================*/
+
+void RQueueRdbSave(RedisModuleIO *rdb, void *value) {
+    rqueue_t *rqueue = value;
+    msg_t *node; // = r;
+
+    RedisModule_SaveUnsigned(rdb, rqueue->undelivered.len);
+	RedisModule_SaveUnsigned(rdb, rqueue->delivered.len);
+	
+	// First: persist undelivered list
+	node = rqueue->undelivered.first;
+    while(node) {
+        RedisModule_SaveUnsigned(rdb,node->id.ms);
+        RedisModule_SaveUnsigned(rdb,node->id.seq);
+		RedisModule_SaveString(rdb, node->value);
+        node = node->next;
+    }
+
+	// Second: persist delivered elements
+	node = rqueue->delivered.first;
+    while(node) {
+        RedisModule_SaveUnsigned(rdb,node->id.ms);
+        RedisModule_SaveUnsigned(rdb,node->id.seq);
+		RedisModule_SaveString(rdb, node->value);
+		RedisModule_SaveUnsigned(rdb,node->deliveries);
+		RedisModule_SaveUnsigned(rdb,node->lastDelivery);
+        node = node->next;
+    }
+}
+
+void *RQueueRdbLoad(RedisModuleIO *rdb, int encver) {
+    if (encver != RQUEUE_ENCODING_VERSION) {
+        RedisModule_Log(NULL, "warning", "Can't load data with version %d. Current supported version: %d",
+			encver, RQUEUE_ENCODING_VERSION);
+        return NULL;
+    }
+
+	rqueue_t *rqueue = createRQueueObject();
+
+    rqueue->undelivered.len = RedisModule_LoadUnsigned(rdb);
+    rqueue->delivered.len  = RedisModule_LoadUnsigned(rdb);
+	uint64_t total_messages = rqueue->undelivered.len + rqueue->delivered.len;
+
+	if(total_messages == 0){
+		return rqueue;
+	}
+
+	msg_t *msg = RedisModule_Alloc(sizeof(*msg) * total_messages);
+
+	// load "undelivered" messages
+	if(rqueue->undelivered.len > 0)
+	{
+		rqueue->undelivered.first = &msg[0];
+
+		for(
+			uint64_t i = 0, j = 1;
+			i < rqueue->undelivered.len;
+			i++, j++
+		){
+			msg[i].id.ms = RedisModule_LoadUnsigned(rdb);
+			msg[i].id.seq = RedisModule_LoadUnsigned(rdb);
+			msg[i].value = RedisModule_LoadString(rdb);
+			msg[i].deliveries = 0;
+			msg[i].lastDelivery = 0;
+			msg[i].next = (
+				j < rqueue->undelivered.len ?
+				&msg[j] :
+				NULL
+			);
+		}
+
+		rqueue->undelivered.last = &msg[rqueue->undelivered.len - 1];
+	}
+	
+
+	// load "delivered" messages
+	if(rqueue->delivered.len > 0)
+	{
+		rqueue->delivered.first = &msg[rqueue->delivered.len];
+
+		for(
+			uint64_t i = 0, j = 1, k = rqueue->delivered.len;
+			i < rqueue->delivered.len;
+			i++, j++, k++
+		){
+			msg[k].id.ms = RedisModule_LoadUnsigned(rdb);
+			msg[k].id.seq = RedisModule_LoadUnsigned(rdb);
+			msg[k].value = RedisModule_LoadString(rdb);
+			msg[k].deliveries = RedisModule_LoadUnsigned(rdb);
+			msg[k].lastDelivery = RedisModule_LoadUnsigned(rdb);
+			msg[k].next = (
+				j < rqueue->delivered.len ?
+				&msg[k + 1] :
+				NULL
+			);
+		}
+
+		rqueue->delivered.last = &msg[rqueue->delivered.len - 1];
+	}
+	
+	return rqueue;
+}
+
+
+void RQueueReleaseObject(void *value) {
+	rqueue_t *rqueue = value;
+	msg_t *cur, *next;
+
+	 // Free all undelivered message
+    cur = rqueue->undelivered.first;
+    while(cur) {
+		next = cur->next;
+		RedisModule_FreeString(NULL, cur->value);
+        RedisModule_Free(cur);
+        cur = next;
+    }
+
+	 // Free all delivered message
+    cur = rqueue->delivered.first;
+    while(cur) {
+        next = cur->next;
+        RedisModule_Free(cur);
+        cur = next;
+    }
+
+    RedisModule_Free(value);
 }
 
 /* Reply callback for blocking command MQ.BPOP */

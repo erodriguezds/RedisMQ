@@ -2,6 +2,7 @@
 #include <sys/time.h>
 #include "../redismodule.h"
 
+#define RQUEUE_ENCODING_VERSION 0
 #define MSG_ID_FORMAT "%lu-%lu"
 
 typedef long long mstime_t; /* millisecond time type. */
@@ -66,3 +67,8 @@ int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 void bpop_freeData(RedisModuleCtx *ctx, void *privdata);
 void bpop_disconnected(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc);
+
+/* RDB and AOF handlers */
+void RQueueRdbSave(RedisModuleIO *rdb, void *value);
+void *RQueueRdbLoad(RedisModuleIO *rdb, int encver);
+void RQueueReleaseObject(void *value);

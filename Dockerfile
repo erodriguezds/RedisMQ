@@ -1,6 +1,18 @@
-FROM redis:5.0.5
+FROM redis:latest as builder
 
 RUN apt update && apt install -y build-essential
-COPY redis.conf /usr/local/etc/redis/redis.conf
-RUN touch /var/log/redis.log && chown redis:redis /var/log/redis.log
-CMD [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+
+ADD . /usr/src/redismq
+WORKDIR /usr/src/redismq
+RUN make
+
+#---------------------------------------------------------------------------------------------- 
+# Package the runner
+FROM redis:latest
+
+ENV LIBDIR /usr/lib/redis/modules
+WORKDIR /data
+RUN mkdir -p "$LIBDIR"
+COPY --from=builder /usr/src/redismq/bin/redismq.so "$LIBDIR"
+
+CMD ["redis-server", "--loadmodule", "/usr/lib/redis/modules/redismq.so"]

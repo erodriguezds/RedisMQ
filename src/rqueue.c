@@ -69,10 +69,13 @@ rqueue_t *createRQueueObject(){
 	return rqueue;
 }
 
-int popAndReply(rqueue_t *rqueue, long long count, RedisModuleCtx *ctx)
+/**
+ * @return int The items actually poped
+ */
+long long popAndReply(rqueue_t *rqueue, long long *count, RedisModuleCtx *ctx)
 {
-	if(rqueue->undelivered.first == NULL){
-		return RedisModule_ReplyWithNull(ctx);
+	if(*count <= 0 || rqueue->undelivered.len == 0 || rqueue->undelivered.first == NULL){
+		return 0;
 	}
 
 	msg_t *topop = rqueue->undelivered.first,
@@ -80,9 +83,7 @@ int popAndReply(rqueue_t *rqueue, long long count, RedisModuleCtx *ctx)
 
     long long actually_poped = 0;
 
-	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
-
-	while (count > 0 && topop != NULL)
+	while (*count > 0 && topop != NULL)
 	{
 		next = topop->next;
 		topop->lastDelivery = mstime();
@@ -111,14 +112,12 @@ int popAndReply(rqueue_t *rqueue, long long count, RedisModuleCtx *ctx)
 		RedisModule_ReplyWithString(ctx, topop->value);
 
 		// Move-on to the next element to pop
-		count -= 1;
+		*count = *count - 1;
 		actually_poped += 1;
 		topop = next;
 	}
 
-	RedisModule_ReplySetArrayLength(ctx, actually_poped);
-
-	return REDISMODULE_OK;
+	return actually_poped;
 }
 
 /* ============= RDB and AOF callbacks ==================*/

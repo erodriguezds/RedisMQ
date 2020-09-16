@@ -228,7 +228,7 @@ int inspectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 }
 
 /**
- * Usage: POP <count> <key>
+ * Usage: MQ.POP <count> [ BLOCK <ms> ] <key>
  * 
  * Pops <count> elements from the reliable queue at <key>.
  * The poped elements are placed into the internal "delivered" list, for
@@ -240,33 +240,70 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	if (argc < 3) return RedisModule_WrongArity(ctx);
 
-	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[2], REDISMODULE_READ|REDISMODULE_WRITE);
-    int type = RedisModule_KeyType(key);
-   
-	if(type == REDISMODULE_KEYTYPE_EMPTY){
-		return RedisModule_ReplyWithNull(ctx);
-	}
-	
-	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
-		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
-	}
-
-	// Retrieve the key content
-	long long count = 1;
+	long long count = 1, block = 0;
+	int first_key = 2;
 
 	if(RMUtil_ParseArgs(argv, argc, 1, "l", &count) != REDISMODULE_OK){
-		return RedisModule_ReplyWithError(ctx, "usage: MQ.POP <count:uint> <key:string>");
+		return RedisModule_ReplyWithError(ctx, MQ_ERROR_POP_USAGE);
 	}
 
 	if(count <= 0){
 		return RedisModule_ReplyWithError(ctx, "count must be >= 1");
 	}
 
-	return popAndReply(
-		RedisModule_ModuleTypeGetValue(key),
-		count,
-		ctx
-	);
+	if(argc >= 5 && RMUtil_StringEqualsCaseC(argv[2], "BLOCK")){
+		if(RMUtil_ParseArgs(argv, argc, 3, "l", &block) == REDISMODULE_OK){
+			first_key = 4;
+		} else {
+			block = 0;
+		}
+	}
+
+	long long total_poped = 0;
+
+	//First, check all queues
+	for(
+		int k = first_key;
+		k < argc && count > 0;
+		k++
+	){
+		RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[k], REDISMODULE_READ|REDISMODULE_WRITE);
+		int type = RedisModule_KeyType(key);
+	
+		//TODO: If BLOCK is provided, create the key, and block
+		if(type == REDISMODULE_KEYTYPE_EMPTY){
+			continue;
+			//return RedisModule_ReplyWithNull(ctx);
+		}
+		
+		if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+			if(total_poped == 0){
+				return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
+			}
+
+			continue;
+		}
+
+		rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
+
+		if(rqueue->undelivered.len == 0 || rqueue->undelivered.first == NULL){
+			continue;
+		}
+
+		if(total_poped == 0){
+			RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+		}
+
+		total_poped += popAndReply(rqueue, &count, ctx);
+	}
+
+	if(total_poped > 0){
+		RedisModule_ReplySetArrayLength(ctx, total_poped);
+	} else {
+		RedisModule_ReplyWithArray(ctx, 0);
+	}
+
+	return REDISMODULE_OK;
 }
 
 /**

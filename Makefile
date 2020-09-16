@@ -16,11 +16,11 @@ ifndef OUT_DIR
 endif
 
 
-all: module.so
+all: redismq.so
 
-module.so:
+redismq.so:
 	$(MAKE) -C ./$(SRC_DIR)
-	cp ./$(SRC_DIR)/module.so ./$(OUT_DIR)
+	cp ./$(SRC_DIR)/redismq.so ./$(OUT_DIR)
 
 clean: FORCE
 	rm -rf *.xo *.so *.o

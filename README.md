@@ -1,4 +1,5 @@
-# RedisMQ (still in progress!!! Please don't use it... yet)
+# RedisMQ 
+##### :warning: Still in progress. Please don't use it in production enviroments... yet
 
 A Redis module for implementing better and truly reliable message broking within Redis.
 

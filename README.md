@@ -7,11 +7,11 @@ A Redis module for implementing better and truly reliable message broking within
 1. [Data Structures](#data-structures)
    1. [Reliable Queue](#reliable-queue)
 2. [Commands](#commands)
-    1. [MQ.PUSH](#mq.push)
-    2. [MQ.POP](#mq.pop)
-    3. [MQ.ACK](#mq.ack)
-    4. [MQ.RECOVER](#mq.recover)
-    5. [MQ.INSPECT](#mq.inspect)
+    1. [MQ.PUSH](#mqpush)
+    2. [MQ.POP](#mqpop)
+    3. [MQ.ACK](#mqack)
+    4. [MQ.RECOVER](#mqrecover)
+    5. [MQ.INSPECT](#mqinspect)
 
 # Data Structures <a name="data-structures"></a>
 

@@ -97,7 +97,7 @@ long long popAndReply(rqueue_t *rqueue, long long *count, RedisModuleCtx *ctx)
 		if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
 			rqueue->delivered.first = rqueue->delivered.last = topop;
 		} else {
-			rqueue->delivered.last->next = topop;
+			((msg_t *)rqueue->delivered.last)->next = topop;
 			rqueue->delivered.last = topop;
 		}
 		rqueue->delivered.len += 1;
@@ -248,26 +248,77 @@ void RQueueReleaseObject(void *value) {
     RedisModule_Free(value);
 }
 
-/* Reply callback for blocking command MQ.BPOP */
-/*int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+/* Reply callback for blocked MQ.POP */
+int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
-    int *myint = RedisModule_GetBlockedClientPrivateData(ctx);
-    return RedisModule_ReplyWithLongLong(ctx,*myint);
-}*/
+    //rq_blocked_client_t *client = RedisModule_GetBlockedClientPrivateData(ctx);
 
-/* Timeout callback for blocking command MQ.BPOP */
-/*int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+	return RedisModule_ReplyWithSimpleString(ctx,"Hello!");
+
+	/*RedisModule_ReplyWithArray(ctx, 2);
+	RedisModule_ReplyWithString(ctx, client->queue);
+	RedisModule_ReplyWithString(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+
+	msg_t *topop = rqueue->undelivered.first,
+		*next;
+
+    long long actually_poped = 0;
+
+	while (*count > 0 && topop != NULL)
+	{
+		next = topop->next;
+		topop->lastDelivery = mstime();
+		topop->deliveries += 1;
+
+		// Update "undelivered" queue
+		rqueue->undelivered.first = topop->next;
+		rqueue->undelivered.len -= 1;
+
+		// Update "delivered" queue
+		if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
+			rqueue->delivered.first = rqueue->delivered.last = topop;
+		} else {
+			rqueue->delivered.last->next = topop;
+			rqueue->delivered.last = topop;
+		}
+		rqueue->delivered.len += 1;
+		topop->next = NULL;
+
+		// Finally: reply with a 2-element-array with: MsgID and the payload
+		RedisModule_ReplyWithArray(ctx, 2);
+		RedisModule_ReplyWithString(
+			ctx,
+			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, topop->id.ms, topop->id.seq)
+		);
+		RedisModule_ReplyWithString(ctx, topop->value);
+
+		// Move-on to the next element to pop
+		*count = *count - 1;
+		actually_poped += 1;
+		topop = next;
+	}
+
+	return actually_poped;
+	
+    return RedisModule_ReplyWithLongLong(ctx,*myint);*/
+}
+
+/* Timeout callback for blocked MQ.POP */
+int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
-    return RedisModule_ReplyWithSimpleString(ctx,"Request timedout");
-}*/
+	RedisModule_Log(ctx,"debug","bpop timeout");
+
+    return RedisModule_ReplyWithNull(ctx);
+}
 
 /* Private data freeing callback for MQ.BPOP command. */
-/*void bpop_freeData(RedisModuleCtx *ctx, void *privdata) {
+void bpop_freeData(RedisModuleCtx *ctx, void *privdata) {
     REDISMODULE_NOT_USED(ctx);
-    RedisModule_Free(privdata);
-}*/
+    //RedisModule_Free(privdata);
+	RedisModule_Log(ctx,"debug","Freeing bpop privdata at %p", privdata);
+}
 
 /* An example blocked client disconnection callback.
  *

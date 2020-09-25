@@ -25,23 +25,32 @@ typedef struct msg_t {
 } msg_t;
 
 typedef struct queue_t {
-    msg_t *first; /* First to be served */
-    msg_t *last;
+    void *first; /* First to be served */
+    void *last;
     size_t len; /* Number of elements added. */
 } queue_t;
+
+typedef struct rq_blocked_client_t {
+    RedisModuleBlockedClient *bc; // Redis Blocked Client
+    uint count; // total items the client is willing to pop
+    uint total_ref; // total references to this node
+    uint qcount; // total queues referenced by "queues"
+    RedisModuleString **queues;
+    RedisModuleString *queue;
+    struct rq_blocked_client_t *next;
+} rq_blocked_client_t;
 
 /**
  * Reliable Queue Object 
  */
 typedef struct rqueue_t {
-    msgid_t last_id;       /* Zero if there are yet no items. */
-    queue_t undelivered;
-    queue_t delivered; /* Queue of messages that has being delivered at-least-one */
+    msgid_t last_id;     // Zero if there are yet no items
+    queue_t undelivered; // never-delivered queue
+    queue_t delivered;   // Queue of messages that has being delivered at-least-one 
+    queue_t clients;     // Blocked Clients
 } rqueue_t;
 
-typedef struct bpopclient_t {
-    
-} bpopclient_t;
+
 
 long long mstime(void);
 

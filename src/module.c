@@ -16,6 +16,7 @@ static RedisModuleType *RQueueRedisType;
 int qinfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	RedisModule_AutoMemory(ctx);
+
 	if (argc != 2) return RedisModule_WrongArity(ctx);
 	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ);
 	int type = RedisModule_KeyType(key);
@@ -31,17 +32,14 @@ int qinfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	RedisModule_ReplyWithArray(ctx,6);
 
-	RedisModule_ReplyWithCString(ctx, "last-id");
-	RedisModule_ReplyWithString(
-		ctx,
-		RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, rqueue->last_id.ms, rqueue->last_id.seq)
-	);
-
 	RedisModule_ReplyWithCString(ctx, "undelivered-queue-length");
 	RedisModule_ReplyWithLongLong(ctx, rqueue->undelivered.len);
 
 	RedisModule_ReplyWithCString(ctx, "delivered-queue-length");
 	RedisModule_ReplyWithLongLong(ctx, rqueue->delivered.len);
+
+	RedisModule_ReplyWithCString(ctx, "blocked-clients");
+	RedisModule_ReplyWithLongLong(ctx, rqueue->clients.len);
 
 	return REDISMODULE_OK;
 }
@@ -72,6 +70,7 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
     	rqueue->last_id.seq = 0;
 		initQueue(&rqueue->undelivered);
 		initQueue(&rqueue->delivered);
+		initQueue(&rqueue->clients);
 		RedisModule_ModuleTypeSetValue(key, RQueueRedisType, rqueue);
 	} else if(RedisModule_ModuleTypeGetType(key) == RQueueRedisType){
 		// key exists. Get and update
@@ -111,7 +110,7 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	if(rqueue->undelivered.first == NULL){
 		rqueue->undelivered.first = &newmsg[0];
 	} else {
-		rqueue->undelivered.last->next = &newmsg[0];
+		((msg_t*) rqueue->undelivered.last)->next = &newmsg[0];
 	}
 
 	// Update last node
@@ -123,6 +122,25 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	// Update last_id
 	rqueue->last_id = newmsg[count - 1].id;
 
+	// Unblock clients
+	rq_blocked_client_t *client = rqueue->clients.first;
+
+	while (client && count > 0)
+	{
+		if(client->bc != NULL){
+			//TODO: change argv[1] for some local variable
+			client->queue = argv[1];
+			RedisModule_UnblockClient(client->bc, client);
+		}
+		client->bc = NULL;
+		rqueue->clients.first = client->next;
+		client->total_ref -= 1;
+
+		// IMPORTANT: DON'T FREE ANY DATA HERE, BUT IN FREE_PRIVDATA_CALLBACK
+
+		client = client->next;
+	}
+	
 	return REDISMODULE_OK;
 }
 
@@ -260,6 +278,8 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	}
 
 	long long total_poped = 0;
+	rqueue_t *rqueue = NULL;
+	uint valid_keys = 0;
 
 	//First, check all queues
 	for(
@@ -270,8 +290,8 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[k], REDISMODULE_READ|REDISMODULE_WRITE);
 		int type = RedisModule_KeyType(key);
 	
-		//TODO: If BLOCK is provided, create the key, and block
 		if(type == REDISMODULE_KEYTYPE_EMPTY){
+			valid_keys++; // It's valid for BLOCKING pop
 			continue;
 			//return RedisModule_ReplyWithNull(ctx);
 		}
@@ -284,7 +304,9 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 			continue;
 		}
 
-		rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
+		valid_keys++;
+
+		rqueue = RedisModule_ModuleTypeGetValue(key);
 
 		if(rqueue->undelivered.len == 0 || rqueue->undelivered.first == NULL){
 			continue;
@@ -299,8 +321,67 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	if(total_poped > 0){
 		RedisModule_ReplySetArrayLength(ctx, total_poped);
-	} else {
-		RedisModule_ReplyWithArray(ctx, 0);
+		return REDISMODULE_OK;
+	}
+
+	if(block == 0){
+		return RedisModule_ReplyWithArray(ctx, 0);
+	}
+	
+	
+	//BLOCKING behaviour. Add rq_blocked_client_t to every key
+	rq_blocked_client_t *client = RedisModule_Alloc(sizeof(*client));
+	client->bc = RedisModule_BlockClient(
+		ctx,
+		bpop_reply,
+		bpop_timeout,
+		bpop_freeData,
+		block < 0 ? 0 : block
+	);
+	client->count = count;
+	client->total_ref = 0;
+	client->qcount = valid_keys;
+	client->queues = RedisModule_Alloc(sizeof(RedisModuleString *) * valid_keys);
+	client->queue = NULL;
+
+	// Add the client to every key
+	rqueue = NULL;
+	for(
+		int k = first_key, q = 0;
+		k < argc;
+		k++
+	){
+		RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[k], REDISMODULE_READ|REDISMODULE_WRITE);
+		int type = RedisModule_KeyType(key);
+	
+
+		if(type == REDISMODULE_KEYTYPE_EMPTY){
+			// Create the RQUEUE object
+			rqueue = RedisModule_Alloc(sizeof(*rqueue));
+			rqueue->last_id.ms = 0;
+			rqueue->last_id.seq = 0;
+			initQueue(&rqueue->undelivered);
+			initQueue(&rqueue->delivered);
+			RedisModule_ModuleTypeSetValue(key, RQueueRedisType, rqueue);
+		} else if(RedisModule_ModuleTypeGetType(key) == RQueueRedisType){
+			rqueue = RedisModule_ModuleTypeGetValue(key);
+		} else {
+			continue;
+		}
+
+		// Retain key (queue name) string
+		RedisModule_RetainString(ctx, argv[k]);
+		client->queues[q] = argv[k];
+		q++;
+
+		if(rqueue->clients.first == NULL || rqueue->clients.last == NULL){
+			rqueue->clients.first = rqueue->clients.last =  client;
+		} else {
+			((rq_blocked_client_t*)rqueue->clients.last)->next = client;
+			rqueue->clients.last = client;
+		}
+		rqueue->clients.len += 1;
+		client->total_ref++;
 	}
 
 	return REDISMODULE_OK;
@@ -527,7 +608,7 @@ int recoverCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		//Move current node to the end of the delivered queue
 		if(cur->next){
 			rqueue->delivered.first = cur->next;
-			rqueue->delivered.last->next = cur;
+			((msg_t *)rqueue->delivered.last)->next = cur;
 			rqueue->delivered.last = cur;
 			cur->next = NULL;
 		}

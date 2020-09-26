@@ -287,7 +287,8 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		k < argc && count > 0;
 		k++
 	){
-		RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[k], REDISMODULE_READ|REDISMODULE_WRITE);
+		RedisModuleString *qname = argv[k];
+		RedisModuleKey *key = RedisModule_OpenKey(ctx, qname, REDISMODULE_READ|REDISMODULE_WRITE);
 		int type = RedisModule_KeyType(key);
 	
 		if(type == REDISMODULE_KEYTYPE_EMPTY){
@@ -316,7 +317,7 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 			RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
 		}
 
-		total_poped += popAndReply(rqueue, &count, ctx);
+		total_poped += popAndReply(ctx, rqueue, qname, &count);
 	}
 
 	if(total_poped > 0){

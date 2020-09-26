@@ -72,7 +72,12 @@ rqueue_t *createRQueueObject(){
 /**
  * @return int The items actually poped
  */
-long long popAndReply(rqueue_t *rqueue, long long *count, RedisModuleCtx *ctx)
+long long popAndReply(
+	RedisModuleCtx *ctx,
+	rqueue_t *rqueue,
+	RedisModuleString *qname,
+	long long *count
+)
 {
 	if(*count <= 0 || rqueue->undelivered.len == 0 || rqueue->undelivered.first == NULL){
 		return 0;
@@ -104,7 +109,8 @@ long long popAndReply(rqueue_t *rqueue, long long *count, RedisModuleCtx *ctx)
 		topop->next = NULL;
 
 		// Finally: reply with a 2-element-array with: MsgID and the payload
-		RedisModule_ReplyWithArray(ctx, 2);
+		RedisModule_ReplyWithArray(ctx, 3);
+		RedisModule_ReplyWithString(ctx, qname);
 		RedisModule_ReplyWithString(
 			ctx,
 			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, topop->id.ms, topop->id.seq)

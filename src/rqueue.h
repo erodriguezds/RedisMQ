@@ -69,7 +69,12 @@ void setNextMsgID(msgid_t *last_id, msgid_t *new_id);
  * Pops up to "count" messages from the reliable queue at "rqueue", and replies
  * to the Redis client
  */
-long long popAndReply(rqueue_t *rqueue, long long *count, RedisModuleCtx *ctx);
+long long popAndReply(
+	RedisModuleCtx *ctx,
+	rqueue_t *rqueue,
+	RedisModuleString *qname,
+	long long *count
+);
 
 /* Blocking commands callbacks */
 int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);

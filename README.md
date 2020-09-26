@@ -37,13 +37,35 @@ Pushes 1 or more elements into the RQUEUE stored at key. If key does not exist, 
 As already implied above, it is possible to push multiple elements using a single command call just specifying multiple arguments at the end of the command. Elements are inserted one after the other to the end of the queue, from the leftmost element to the rightmost element.
 
 ### MQ.POP
-#### Usage: MQ.POP   *count*   *key*
+#### Usage: MQ.POP   *count*   [ BLOCK  *timeout* ]   *key1*  [ *key2* [ ... ] ]
 
-Pops *count* elements from the RQUEUE stored at *key*. If key does not exists, *nil* is returned. If key is NOT an RQUEUE type, an error is returned.
+Pops *count* elements from one or more queues. If more than one queue is specified, the command will try to pop all the requested elementes from the fisrt queue, then from the second queue, and so on.
+
+### Blocking behavior
+
+If the BLOCK variant is provided, and none of the specified queues have at least 1 undelivered element to be poped, the command will block the client until any other client pushes elements into any of the specified queues, or until the specified timeout (in milliseconds) is reached, in which case a null response is returned.
 
 #### Returned value: Array reply
 
-This command returns an array of *count* elements, where every element is also an array of 2 sub-elements: the ID of a payload, and the paylod.
+This command returns an array of elements, where every element is also a 3-elements-array with: the queue key from which the element was poped, the ID of the job/message, and the job/message body.
+
+Example Reply:
+```bash
+127.0.0.1:6379> mq.pop  10  myHighPriorityQueue  myLowPriorityQueue
+1) 1) "myHighPriorityQueue"
+   2) "1601155608777-1"
+   3) "This is the content of the job/message"
+2) 1) "myHighPriorityQueue"
+   2) "1601155608777-2"
+   3) "This is another job/message"
+3) 1) "myLowPriorityQueue"
+   2) "1601155608777-3"
+   3) "This is a low priority job/message"
+4) 1) "myLowPriorityQueue"
+   2) "1601155596824-1"
+   3) "This is another low priority job/message"
+```
+
 
 ### MQ.ACK
 #### Usage: MQ.ACK   *key*   *id1*   [  *id2*  [ ... ] ]

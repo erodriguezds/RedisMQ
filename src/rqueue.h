@@ -59,6 +59,9 @@ mstime_t mstime(void);
 
 void initQueue(queue_t *queue);
 
+/** Creates and initializes a new RELIABLEQ object, and returns a pointer to it. */
+rqueue_t *rqueueCreate();
+
 /* Generate the next item ID given the previous one. If the current
  * milliseconds Unix time is greater than the previous one, just use this
  * as time part and start with sequence part of zero. Otherwise we use the

@@ -59,12 +59,13 @@ void setNextMsgID(msgid_t *last_id, msgid_t *new_id) {
  * Creates and initializes a fresh new RQUEUE object
  * @return rqueue_t * Pointer to the created object
  */
-rqueue_t *createRQueueObject(){
+rqueue_t *rqueueCreate(){
 	rqueue_t *rqueue = RedisModule_Alloc(sizeof(*rqueue));
 	rqueue->last_id.ms = 0;
-    rqueue->last_id.seq = 0;
+	rqueue->last_id.seq = 0;
 	initQueue(&rqueue->undelivered);
 	initQueue(&rqueue->delivered);
+	initQueue(&rqueue->clients);
 	
 	return rqueue;
 }
@@ -163,7 +164,7 @@ void *RQueueRdbLoad(RedisModuleIO *rdb, int encver) {
         return NULL;
     }
 
-	rqueue_t *rqueue = createRQueueObject();
+	rqueue_t *rqueue = rqueueCreate();
 
     rqueue->undelivered.len = RedisModule_LoadUnsigned(rdb);
     rqueue->delivered.len  = RedisModule_LoadUnsigned(rdb);

@@ -13,7 +13,7 @@ static RedisModuleType *RQueueRedisType;
 /**
  * Return info on a given queue
  */
-int qinfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+int infoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	RedisModule_AutoMemory(ctx);
 
@@ -65,12 +65,7 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
    
 	if(type == REDISMODULE_KEYTYPE_EMPTY){
 		// Key doesn't exist. Create...
-		rqueue = RedisModule_Alloc(sizeof(*rqueue));
-		rqueue->last_id.ms = 0;
-    	rqueue->last_id.seq = 0;
-		initQueue(&rqueue->undelivered);
-		initQueue(&rqueue->delivered);
-		initQueue(&rqueue->clients);
+		rqueue = rqueueCreate();
 		RedisModule_ModuleTypeSetValue(key, RQueueRedisType, rqueue);
 	} else if(RedisModule_ModuleTypeGetType(key) == RQueueRedisType){
 		// key exists. Get and update
@@ -357,12 +352,7 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	
 
 		if(type == REDISMODULE_KEYTYPE_EMPTY){
-			// Create the RQUEUE object
-			rqueue = RedisModule_Alloc(sizeof(*rqueue));
-			rqueue->last_id.ms = 0;
-			rqueue->last_id.seq = 0;
-			initQueue(&rqueue->undelivered);
-			initQueue(&rqueue->delivered);
+			rqueue = rqueueCreate();
 			RedisModule_ModuleTypeSetValue(key, RQueueRedisType, rqueue);
 		} else if(RedisModule_ModuleTypeGetType(key) == RQueueRedisType){
 			rqueue = RedisModule_ModuleTypeGetValue(key);
@@ -747,7 +737,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 		return REDISMODULE_ERR;
 
 	// register xq.info - the default registration syntax
-	if (RedisModule_CreateCommand(ctx, "mq.qinfo", qinfoCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
+	if (RedisModule_CreateCommand(ctx, "mq.info", infoCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
 		return REDISMODULE_ERR;
 	}
 

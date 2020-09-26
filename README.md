@@ -1,7 +1,11 @@
-# RedisMQ 
+# RedisSQ 
 ##### :warning: Still in progress. Please don't use it in production enviroments... yet
 
-A Redis module for implementing better and truly reliable message broking within Redis.
+RedisSQ, for Simple Queues, is as simple message broker module for implementing simple and reliable message broking within Redis.
+
+If you're looking for a more robust Redis-based message broker solution, take a look at [Disque](https://github.com/antirez/disque-module), a distributed and clustered message broker module for Redis.
+
+Unlike Disque, this module won't require you to have a Redis cluster, neither to use AOF persistance.
 
 ## Table of contents
 1. [Data Structures](#data-structures)

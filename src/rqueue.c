@@ -259,56 +259,14 @@ void RQueueReleaseObject(void *value) {
 int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
-    //rq_blocked_client_t *client = RedisModule_GetBlockedClientPrivateData(ctx);
 
-	return RedisModule_ReplyWithSimpleString(ctx,"Hello!");
+	rq_blocked_client_t *client = RedisModule_GetBlockedClientPrivateData(ctx);
 
-	/*RedisModule_ReplyWithArray(ctx, 2);
-	RedisModule_ReplyWithString(ctx, client->queue);
-	RedisModule_ReplyWithString(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
-
-	msg_t *topop = rqueue->undelivered.first,
-		*next;
-
-    long long actually_poped = 0;
-
-	while (*count > 0 && topop != NULL)
-	{
-		next = topop->next;
-		topop->lastDelivery = mstime();
-		topop->deliveries += 1;
-
-		// Update "undelivered" queue
-		rqueue->undelivered.first = topop->next;
-		rqueue->undelivered.len -= 1;
-
-		// Update "delivered" queue
-		if(rqueue->delivered.first == NULL || rqueue->delivered.last == NULL){
-			rqueue->delivered.first = rqueue->delivered.last = topop;
-		} else {
-			rqueue->delivered.last->next = topop;
-			rqueue->delivered.last = topop;
-		}
-		rqueue->delivered.len += 1;
-		topop->next = NULL;
-
-		// Finally: reply with a 2-element-array with: MsgID and the payload
-		RedisModule_ReplyWithArray(ctx, 2);
-		RedisModule_ReplyWithString(
-			ctx,
-			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, topop->id.ms, topop->id.seq)
-		);
-		RedisModule_ReplyWithString(ctx, topop->value);
-
-		// Move-on to the next element to pop
-		*count = *count - 1;
-		actually_poped += 1;
-		topop = next;
-	}
-
-	return actually_poped;
+	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+	long long poped = popAndReply(ctx, client->rqueue, client->qname, &client->count);
+	RedisModule_ReplySetArrayLength(ctx, poped);
 	
-    return RedisModule_ReplyWithLongLong(ctx,*myint);*/
+	return REDISMODULE_OK;
 }
 
 /* Timeout callback for blocked MQ.POP */

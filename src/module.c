@@ -124,12 +124,16 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	{
 		if(client->bc != NULL){
 			//TODO: change argv[1] for some local variable
-			client->queue = argv[1];
+			client->rqueue = rqueue;
+			client->qname = argv[1];
+			//RedisModule_Log(ctx, "debug", "Unblockint client at %p", client->bc);
 			RedisModule_UnblockClient(client->bc, client);
+			client->bc = NULL;
+			client->total_ref -= 1;
 		}
-		client->bc = NULL;
+		
 		rqueue->clients.first = client->next;
-		client->total_ref -= 1;
+		
 
 		// IMPORTANT: DON'T FREE ANY DATA HERE, BUT IN FREE_PRIVDATA_CALLBACK
 
@@ -338,7 +342,9 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	client->total_ref = 0;
 	client->qcount = valid_keys;
 	client->queues = RedisModule_Alloc(sizeof(RedisModuleString *) * valid_keys);
-	client->queue = NULL;
+	client->rqueue = NULL;
+	client->qname = NULL;
+	client->next = NULL;
 
 	// Add the client to every key
 	rqueue = NULL;

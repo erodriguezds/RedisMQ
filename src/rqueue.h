@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <sys/time.h>
+#define REDISMODULE_EXPERIMENTAL_API
 #include "../redismodule.h"
 
 #define RQUEUE_ENCODING_VERSION 0
@@ -30,16 +31,6 @@ typedef struct queue_t {
     size_t len; /* Number of elements added. */
 } queue_t;
 
-typedef struct rq_blocked_client_t {
-    RedisModuleBlockedClient *bc; // Redis Blocked Client
-    uint count; // total items the client is willing to pop
-    uint total_ref; // total references to this node
-    uint qcount; // total queues referenced by "queues"
-    RedisModuleString **queues;
-    RedisModuleString *queue;
-    struct rq_blocked_client_t *next;
-} rq_blocked_client_t;
-
 /**
  * Reliable Queue Object 
  */
@@ -50,7 +41,16 @@ typedef struct rqueue_t {
     queue_t clients;     // Blocked Clients
 } rqueue_t;
 
-
+typedef struct rq_blocked_client_t {
+    RedisModuleBlockedClient *bc; // Redis Blocked Client
+    long long count; // total items the client is willing to pop
+    uint total_ref; // total references to this node
+    uint qcount; // total queues referenced by "queues"
+    RedisModuleString **queues;
+    RedisModuleString *qname; // name of the queue that got items pushed first.
+    rqueue_t *rqueue; // RELIABLEQ object that got items pushed.
+    struct rq_blocked_client_t *next;
+} rq_blocked_client_t;
 
 long long mstime(void);
 

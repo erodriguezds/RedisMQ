@@ -1,7 +1,9 @@
-# RedisSQ 
+# RedisRQ 
 ##### :warning: Still in progress. Please don't use it in production enviroments... yet
 
-RedisSQ, for Simple Queues, is as simple message broker module for implementing simple and reliable message broking within Redis.
+RedisRQ, for Reliable Queues, is as Redis module that introduces a new native type into your Redis instance: the RELIABLEQ type, a queue-like structure with job/message acknowledgment and recovery/re-delivery of messages that were delivered but not acknowledged after a specified time.
+
+This simple data strucutre will enable you to implement truly reliable, and practical, message broking within Redis.
 
 If you're looking for a more robust Redis-based message broker solution, take a look at [Disque](https://github.com/antirez/disque-module), a distributed and clustered message broker module for Redis.
 

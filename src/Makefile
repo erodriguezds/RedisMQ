@@ -23,12 +23,12 @@ CC=gcc
 
 OBJS=rqueue.o module.o
 
-all: rmutil redismq.so
+all: rmutil redisrq.so
 
 rmutil: FORCE
 	$(MAKE) -C $(RMUTIL_LIBDIR)
 
-redismq.so: $(OBJS)
+redisrq.so: $(OBJS)
 	$(LD) -o $@ $(OBJS) $(SHOBJ_LDFLAGS) $(LIBS) -L$(RMUTIL_LIBDIR) -lrmutil -lc 
 
 clean:

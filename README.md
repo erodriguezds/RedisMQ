@@ -11,11 +11,11 @@ Unlike Disque, this module won't require you to have a Redis cluster, neither to
 1. [Data Structures](#data-structures)
    1. [Reliable Queue](#reliable-queue)
 2. [Commands](#commands)
-    1. [MQ.PUSH](#mqpush)
-    2. [MQ.POP](#mqpop)
-    3. [MQ.ACK](#mqack)
-    4. [MQ.RECOVER](#mqrecover)
-    5. [MQ.INSPECT](#mqinspect)
+    1. [RQ.PUSH](#mqpush)
+    2. [RQ.POP](#mqpop)
+    3. [RQ.ACK](#mqack)
+    4. [RQ.RECOVER](#mqrecover)
+    5. [RQ.INSPECT](#mqinspect)
 
 # Data Structures <a name="data-structures"></a>
 
@@ -33,17 +33,17 @@ If you have worked with Redis Streams, you might find all this very familiar. We
 
 ## Commands
 
-### MQ.PUSH
-#### Usage: MQ.PUSH   *key*   *elem1*  [ *elem2* [ ... ] ]
+### RQ.PUSH
+#### Usage: RQ.PUSH   *key*   *elem1*  [ *elem2* [ ... ] ]
 
 Pushes 1 or more elements into the RQUEUE stored at key. If key does not exist, it is created as empty RQUEUE before performing the push operations. When key holds a value that is not a list, an error is returned.
 
 As already implied above, it is possible to push multiple elements using a single command call just specifying multiple arguments at the end of the command. Elements are inserted one after the other to the end of the queue, from the leftmost element to the rightmost element.
 
-### MQ.POP
-#### Usage: MQ.POP   *count*   [ BLOCK  *timeout* ]   *key1*  [ *key2* [ ... ] ]
+### RQ.POP
+#### Usage: RQ.POP  [ COUNT *count* ]  [ BLOCK  *timeout* ]  *key1*  [ *key2* [ ... ] ]
 
-Pops *count* elements from one or more queues. If more than one queue is specified, the command will try to pop all the requested elementes from the fisrt queue, then from the second queue, and so on.
+Pops one or more elements from one or more queues. If more than one queue is specified, the command will try to pop all the requested elements from the fisrt queue, then from the second queue, and so on.
 
 ### Blocking behavior
 
@@ -55,7 +55,7 @@ This command returns an array of elements, where every element is also a 3-eleme
 
 Example Reply:
 ```bash
-127.0.0.1:6379> mq.pop  10  myHighPriorityQueue  myLowPriorityQueue
+127.0.0.1:6379> rq.pop  10  myHighPriorityQueue  myLowPriorityQueue
 1) 1) "myHighPriorityQueue"
    2) "1601155608777-1"
    3) "This is the content of the job/message"
@@ -71,23 +71,23 @@ Example Reply:
 ```
 
 
-### MQ.ACK
-#### Usage: MQ.ACK   *key*   *id1*   [  *id2*  [ ... ] ]
+### RQ.ACK
+#### Usage: RQ.ACK   *key*   *id1*   [  *id2*  [ ... ] ]
 
 Acknowledges the successful processing of one or more messages by its given ID's, thus removing the messages from the internal *delivered* queue.
 
 #### Returned value: Array reply
-The command returns an array with the message ID's that were actually acknowledged (removed from the *delivered* queue). Under ideal conditions, you should always get an array with exactly all the ID's you provided. If a provided ID is NOT included in the reply, it means it was acknowledged before by some other process. This is an undesirable (but unavoidable) scenario that may occur when using the MQ.RECOVER command. It may occur that a message get's delivered more than once (because, for example, some process **RECOVER**ed amessage that was still beign processed). On this scenario, the consumer that ends first the message proce
+The command returns an array with the message ID's that were actually acknowledged (removed from the *delivered* queue). Under ideal conditions, you should always get an array with exactly all the ID's you provided. If a provided ID is NOT included in the reply, it means it was acknowledged before by some other process. This is an undesirable (but unavoidable) scenario that may occur when using the RQ.RECOVER command. It may occur that a message get's delivered more than once (because, for example, some process **RECOVER**ed amessage that was still beign processed). On this scenario, the consumer that ends first the message proce
 
-### MQ.RECOVER
-#### Usage: MQ.RECOVER   *key*   *count*   *elapsed*
+### RQ.RECOVER
+#### Usage: RQ.RECOVER   *key*   *count*   *elapsed*
 Recover *count* elements from *key* that were "delivered" but not acknowledged after *elapsed* milliseconds or more. These are the side effects on the recovered elements:
 1. The "deliveries" counter of every recovered element gets incremented by 1.
 2. The "last-delivery" timestamp of every recovered element gets reset to the current server time.
 3. Every recovered element gets moved from the head of the internal "delivered" queue to the end of the same queue, in order to keep the list ordered by the "last-delivery" timestamp.
 
-### MQ.INSPECT
-#### Usage: MQ.INSPECT   *key*   [ PENDING ]   *start*   *count*
+### RQ.INSPECT
+#### Usage: RQ.INSPECT   *key*   [ PENDING ]   *start*   *count*
 
 Inspects *count* elements at the "undelivered" queue, starting at *start*.
 If PENDING is provided after the *key* to inspect, then the elements at the
@@ -97,7 +97,7 @@ If PENDING is provided after the *key* to inspect, then the elements at the
 Without the PENDING variant, you get an array of elemets standing at the "undelivered" queue, waiting to be poped, where every element is a 2-element-array with: the payload ID, and the payload itself:
 
 ```bash
-127.0.0.1:6379> mq.inspect myreliable1 -2 2
+127.0.0.1:6379> rq.inspect myreliable1 -2 2
 1) 1) "1599352749159-4"
    2) "my message payload at position n - 1"
 2) 1) "1599352749159-5"
@@ -107,13 +107,13 @@ Without the PENDING variant, you get an array of elemets standing at the "undeli
 By using the PENDING variant, you'll get the elemets at the internal "delivered" (at-least-once) queue, also as an array of elements, where every element is a 5-element array indicating:
 1. ID of the payload
 2. The payload
-3. Unix timestamp (in milliseconds) of the last time the element was POPed, or RECOVERed. When elemets are RECOVERed (using the MQ.RECOVER command), this timestamp gets reset.
+3. Unix timestamp (in milliseconds) of the last time the element was POPed, or RECOVERed. When elemets are RECOVERed (using the RQ.RECOVER command), this timestamp gets reset.
 4. Milliseconds elapsed since the element was poped or recovered. This counter is reset after a RECOVER.
 5. Total deliveries: total times the element has being delivered. This counter is incremented by 1 after every RECOVER.
 
 Example reply:
 ```bash
-127.0.0.1:6379> mq.inspect micola PENDING 0 10
+127.0.0.1:6379> rq.inspect micola PENDING 0 10
 1) 1) "1599530647574-5"
    2) "msg1"
    3) (integer) 1599530978782

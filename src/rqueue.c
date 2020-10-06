@@ -321,13 +321,13 @@ void RQueueReleaseObject(void *value) {
 	return NULL;
 }*/
 
-/* Timeout callback for blocked MQ.POP */
+/* Timeout callback for blocked RQ.POP */
 int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	return RedisModule_ReplyWithNull(ctx);
 }
 
-/* Private data freeing callback for MQ.BPOP command. */
+/* Private data freeing callback for RQ.BPOP command. */
 void bpop_freeData(RedisModuleCtx *ctx, void *privdata) {
     REDISMODULE_NOT_USED(ctx);
     //RedisModule_Free(privdata);

@@ -41,7 +41,7 @@ int infoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	return REDISMODULE_OK;
 }
 
-/* Reply callback for blocked MQ.POP */
+/* Reply callback for blocked RQ.POP */
 int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	RedisModule_AutoMemory(ctx);
@@ -79,7 +79,7 @@ int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 }
 
 /**
- * mq.push <key> <msg1> [ <msg2> [...]]
+ * rq.push <key> <msg1> [ <msg2> [...]]
  * Pushes 1 or more items into key
  */
 int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
@@ -157,7 +157,7 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 }
 
 /**
- * MQ.INSPECT <key> [ PENDING ] <start> [ <count> ]
+ * RQ.INSPECT <key> [ PENDING ] <start> [ <count> ]
  * 
  * Inspects <count> elements at the "undelivered" queue, starting at <start>.
  * If PENDING is provided after the <key> to inspect, then the elements at the
@@ -258,7 +258,7 @@ int inspectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 }
 
 /**
- * Usage: MQ.POP <count> [ BLOCK <ms> ] <key>
+ * Usage: RQ.POP <count> [ BLOCK <ms> ] <key>
  * 
  * Pops <count> elements from the reliable queue at <key>.
  * The poped elements are placed into the internal "delivered" list, for
@@ -622,30 +622,30 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 
    if (RELIABLEQ_TYPE == NULL) return REDISMODULE_ERR;
 
-	if (RedisModule_CreateCommand(ctx,"mq.push", pushCommand,"write deny-oom",1,1,1) == REDISMODULE_ERR)
+	if (RedisModule_CreateCommand(ctx,"rq.push", pushCommand,"write deny-oom",1,1,1) == REDISMODULE_ERR)
       return REDISMODULE_ERR;
 
-	if (RedisModule_CreateCommand(ctx,"mq.pop", popCommand,"write",2,2,1) == REDISMODULE_ERR)
+	if (RedisModule_CreateCommand(ctx,"rq.pop", popCommand,"write",2,2,1) == REDISMODULE_ERR)
 		return REDISMODULE_ERR;
 
-	if (RedisModule_CreateCommand(ctx,"mq.ack", ackCommand,"write",1,1,1) == REDISMODULE_ERR)
+	if (RedisModule_CreateCommand(ctx,"rq.ack", ackCommand,"write",1,1,1) == REDISMODULE_ERR)
 		return REDISMODULE_ERR;
 
-	if (RedisModule_CreateCommand(ctx,"mq.recover", recoverCommand,"write",1,1,1) == REDISMODULE_ERR)
+	if (RedisModule_CreateCommand(ctx,"rq.recover", recoverCommand,"write",1,1,1) == REDISMODULE_ERR)
 		return REDISMODULE_ERR;
 
 	// register xq.info - the default registration syntax
-	if (RedisModule_CreateCommand(ctx, "mq.info", infoCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
+	if (RedisModule_CreateCommand(ctx, "rq.info", infoCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
 		return REDISMODULE_ERR;
 	}
 
 	// register xq.parse - the default registration syntax
-	if (RedisModule_CreateCommand(ctx, "mq.inspect", inspectCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
+	if (RedisModule_CreateCommand(ctx, "rq.inspect", inspectCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
 		return REDISMODULE_ERR;
 	}
 
 	// register the unit test
-	RMUtil_RegisterWriteCmd(ctx, "mq.test", TestModule);
+	RMUtil_RegisterWriteCmd(ctx, "rq.test", TestModule);
 	
 
 	return REDISMODULE_OK;

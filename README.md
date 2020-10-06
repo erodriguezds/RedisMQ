@@ -18,11 +18,11 @@ docker run -p 6379:6379 --name redis-rq erodriguezds/redis-rq:latest
 1. [Data Structures](#data-structures)
    1. [Reliable Queue](#reliable-queue)
 2. [Commands](#commands)
-    1. [RQ.PUSH](#mqpush)
-    2. [RQ.POP](#mqpop)
-    3. [RQ.ACK](#mqack)
-    4. [RQ.RECOVER](#mqrecover)
-    5. [RQ.INSPECT](#mqinspect)
+    1. [RQ.PUSH](#rqpush)
+    2. [RQ.POP](#rqpop)
+    3. [RQ.ACK](#rqack)
+    4. [RQ.RECOVER](#rqrecover)
+    5. [RQ.INSPECT](#rqinspect)
 
 # Data Structures <a name="data-structures"></a>
 

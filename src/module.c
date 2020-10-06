@@ -8,7 +8,7 @@
 #include "./rqueue.h"
 #include "./error.h"
 
-static RedisModuleType *RQueueRedisType;
+static RedisModuleType *RELIABLEQ_TYPE;
 
 /**
  * Return info on a given queue
@@ -24,26 +24,59 @@ int infoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx, ERRORMSG_EMPTYKEY);
 	}
 
-	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+	if(RedisModule_ModuleTypeGetType(key) != RELIABLEQ_TYPE){
 		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
 	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
 
-	RedisModule_ReplyWithArray(ctx,6);
+	RedisModule_ReplyWithArray(ctx,4);
 
-	RedisModule_ReplyWithCString(ctx, "undelivered-queue-length");
+	RedisModule_ReplyWithCString(ctx, "undelivered");
 	RedisModule_ReplyWithLongLong(ctx, rqueue->undelivered.len);
 
-	RedisModule_ReplyWithCString(ctx, "delivered-queue-length");
+	RedisModule_ReplyWithCString(ctx, "delivered");
 	RedisModule_ReplyWithLongLong(ctx, rqueue->delivered.len);
-
-	RedisModule_ReplyWithCString(ctx, "blocked-clients");
-	RedisModule_ReplyWithLongLong(ctx, rqueue->clients.len);
 
 	return REDISMODULE_OK;
 }
 
+/* Reply callback for blocked MQ.POP */
+int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+	RedisModule_AutoMemory(ctx);
+
+	rq_pop_t popargs;
+	long long count;
+	RedisModuleString *key = RedisModule_GetBlockedClientReadyKey(ctx);
+	RedisModuleKey *keyobj = RedisModule_OpenKey(ctx, key, REDISMODULE_READ|REDISMODULE_WRITE);
+	
+	if(RedisModule_KeyType(keyobj) == REDISMODULE_KEYTYPE_EMPTY){
+		RedisModule_CloseKey(keyobj);
+		return REDISMODULE_ERR;
+	}
+
+	if(RedisModule_ModuleTypeGetType(keyobj) != RELIABLEQ_TYPE){
+		RedisModule_CloseKey(keyobj);
+		return REDISMODULE_ERR;
+	}
+
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(keyobj);
+
+	if(rqueue->undelivered.len == 0){
+		RedisModule_CloseKey(keyobj);
+		return REDISMODULE_ERR;
+	}
+
+	rq_parse_pop_args(ctx, argv, argc, &popargs);
+	count = popargs.count;
+
+	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+	long long poped = popAndReply(ctx, rqueue, &count);
+	RedisModule_ReplySetArrayLength(ctx, poped);
+	
+	return REDISMODULE_OK;
+}
 
 /**
  * mq.push <key> <msg1> [ <msg2> [...]]
@@ -59,15 +92,14 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	if (argc < 3) return RedisModule_WrongArity(ctx);
 
-
    RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ|REDISMODULE_WRITE);
    int type = RedisModule_KeyType(key);
    
 	if(type == REDISMODULE_KEYTYPE_EMPTY){
 		// Key doesn't exist. Create...
-		rqueue = rqueueCreate();
-		RedisModule_ModuleTypeSetValue(key, RQueueRedisType, rqueue);
-	} else if(RedisModule_ModuleTypeGetType(key) == RQueueRedisType){
+		rqueue = rqueueCreate(argv[1]);
+		RedisModule_ModuleTypeSetValue(key, RELIABLEQ_TYPE, rqueue);
+	} else if(RedisModule_ModuleTypeGetType(key) == RELIABLEQ_TYPE){
 		// key exists. Get and update
 		rqueue = RedisModule_ModuleTypeGetValue(key);
 	} else {
@@ -118,28 +150,9 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	rqueue->last_id = newmsg[count - 1].id;
 
 	// Unblock clients
-	rq_blocked_client_t *client = rqueue->clients.first;
+	RedisModule_SignalKeyAsReady(ctx, argv[1]);
+	//RedisModule_CloseKey(argv[1]);
 
-	while (client && count > 0)
-	{
-		if(client->bc != NULL){
-			//TODO: change argv[1] for some local variable
-			client->rqueue = rqueue;
-			client->qname = argv[1];
-			//RedisModule_Log(ctx, "debug", "Unblockint client at %p", client->bc);
-			RedisModule_UnblockClient(client->bc, client);
-			client->bc = NULL;
-			client->total_ref -= 1;
-		}
-		
-		rqueue->clients.first = client->next;
-		
-
-		// IMPORTANT: DON'T FREE ANY DATA HERE, BUT IN FREE_PRIVDATA_CALLBACK
-
-		client = client->next;
-	}
-	
 	return REDISMODULE_OK;
 }
 
@@ -164,7 +177,7 @@ int inspectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx,ERRORMSG_EMPTYKEY);
 	}
 
-	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+	if(RedisModule_ModuleTypeGetType(key) != RELIABLEQ_TYPE){
 		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
@@ -255,48 +268,36 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 {
 	RedisModule_AutoMemory(ctx);
 
-	if (argc < 3) return RedisModule_WrongArity(ctx);
+	if (argc < 2) return RedisModule_WrongArity(ctx);
 
-	long long count = 1, block = 0;
-	int first_key = 2;
+	rq_pop_t popargs;
 
-	if(RMUtil_ParseArgs(argv, argc, 1, "l", &count) != REDISMODULE_OK){
+	if(rq_parse_pop_args(ctx, argv, argc, &popargs)){
 		return RedisModule_ReplyWithError(ctx, MQ_ERROR_POP_USAGE);
 	}
 
-	if(count <= 0){
-		return RedisModule_ReplyWithError(ctx, "count must be >= 1");
-	}
-
-	if(argc >= 5 && RMUtil_StringEqualsCaseC(argv[2], "BLOCK")){
-		if(RMUtil_ParseArgs(argv, argc, 3, "l", &block) == REDISMODULE_OK){
-			first_key = 4;
-		} else {
-			block = 0;
-		}
-	}
-
+	long long count = popargs.count;
 	long long total_poped = 0;
 	rqueue_t *rqueue = NULL;
-	uint valid_keys = 0;
+	//uint valid_keys = 0;
 
-	//First, check all queues
+	//First, check all keys
 	for(
-		int k = first_key;
-		k < argc && count > 0;
+		int k = 0;
+		k < popargs.key_count && count > 0;
 		k++
 	){
-		RedisModuleString *qname = argv[k];
+		RedisModuleString *qname = popargs.keys[k];
 		RedisModuleKey *key = RedisModule_OpenKey(ctx, qname, REDISMODULE_READ|REDISMODULE_WRITE);
 		int type = RedisModule_KeyType(key);
 	
 		if(type == REDISMODULE_KEYTYPE_EMPTY){
-			valid_keys++; // It's valid for BLOCKING pop
+			//valid_keys++; // It's valid for BLOCKING pop
 			continue;
 			//return RedisModule_ReplyWithNull(ctx);
 		}
 		
-		if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+		if(RedisModule_ModuleTypeGetType(key) != RELIABLEQ_TYPE){
 			if(total_poped == 0){
 				return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
 			}
@@ -304,7 +305,7 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 			continue;
 		}
 
-		valid_keys++;
+		//valid_keys++;
 
 		rqueue = RedisModule_ModuleTypeGetValue(key);
 
@@ -316,7 +317,7 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 			RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
 		}
 
-		total_poped += popAndReply(ctx, rqueue, qname, &count);
+		total_poped += popAndReply(ctx, rqueue, &count);
 	}
 
 	if(total_poped > 0){
@@ -324,133 +325,24 @@ int popCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return REDISMODULE_OK;
 	}
 
-	if(block == 0){
+	if(popargs.block == 0){
 		return RedisModule_ReplyWithArray(ctx, 0);
 	}
 	
-	
 	//BLOCKING behaviour. Add rq_blocked_client_t to every key
-	rq_blocked_client_t *client = RedisModule_Alloc(sizeof(*client));
-	client->bc = RedisModule_BlockClient(
+	RedisModule_BlockClientOnKeys(
 		ctx,
 		bpop_reply,
 		bpop_timeout,
 		bpop_freeData,
-		block < 0 ? 0 : block
+		(popargs.block < 0 ? 0 : popargs.block),
+		popargs.keys,
+		popargs.key_count,
+		NULL //privdata
 	);
-	client->count = count;
-	client->total_ref = 0;
-	client->qcount = valid_keys;
-	client->queues = RedisModule_Alloc(sizeof(RedisModuleString *) * valid_keys);
-	client->rqueue = NULL;
-	client->qname = NULL;
-	client->next = NULL;
-
-	// Add the client to every key
-	rqueue = NULL;
-	for(
-		int k = first_key, q = 0;
-		k < argc;
-		k++
-	){
-		RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[k], REDISMODULE_READ|REDISMODULE_WRITE);
-		int type = RedisModule_KeyType(key);
-	
-
-		if(type == REDISMODULE_KEYTYPE_EMPTY){
-			rqueue = rqueueCreate();
-			RedisModule_ModuleTypeSetValue(key, RQueueRedisType, rqueue);
-		} else if(RedisModule_ModuleTypeGetType(key) == RQueueRedisType){
-			rqueue = RedisModule_ModuleTypeGetValue(key);
-		} else {
-			continue;
-		}
-
-		// Retain key (queue name) string
-		RedisModule_RetainString(ctx, argv[k]);
-		client->queues[q] = argv[k];
-		q++;
-
-		if(rqueue->clients.first == NULL || rqueue->clients.last == NULL){
-			rqueue->clients.first = rqueue->clients.last =  client;
-		} else {
-			((rq_blocked_client_t*)rqueue->clients.last)->next = client;
-			rqueue->clients.last = client;
-		}
-		rqueue->clients.len += 1;
-		client->total_ref++;
-	}
 
 	return REDISMODULE_OK;
 }
-
-/**
- * Usage: BPOP <count> <timeout> <key>
- * 
- * Pops <count> elements from the reliable queue at <key>.
- * The poped elements are placed into the internal "delivered" list, for
- * later acknoledgment.
- */
-/*int bpopCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
-{
-	RedisModule_AutoMemory(ctx);
-
-	if (argc < 3) return RedisModule_WrongArity(ctx);
-
-	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[2], REDISMODULE_READ|REDISMODULE_WRITE);
-    int type = RedisModule_KeyType(key);
-   
-	if(type == REDISMODULE_KEYTYPE_EMPTY){
-		return RedisModule_ReplyWithNull(ctx);
-	}
-	
-	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
-		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
-	}
-
-	// Retrieve the key content
-	long long count = 1,
-		timeout = 0,
-		actually_poped = 0;
-
-	if(RMUtil_ParseArgs(argv, argc, 1, "ll", &count, &timeout) != REDISMODULE_OK){
-		return RedisModule_ReplyWithError(ctx, "usage: MQ.BPOP <count:uint> <timeout:uint> <key:string>");
-	}
-
-	if(count <= 0){
-		return RedisModule_ReplyWithError(ctx, "count must be >= 1");
-	}
-
-	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
-
-	if(rqueue->undelivered.first != NULL){
-		return popAndReply(rqueue, count, ctx);
-	}
-
-	//Block the client
-	RedisModuleBlockedClient *bc = RedisModule_BlockClient(
-		ctx,
-		bpop_reply,
-		bpop_timeout,
-		bpop_freeData,
-		timeout
-	);
-
-    RedisModule_SetDisconnectCallback(bc, bpop_disconnected);
-
-    // Now that we setup a blocking client, we need to pass the control
-    // to the thread. However we need to pass arguments to the thread:
-    // the delay and a reference to the blocked client handle.
-    void **targ = RedisModule_Alloc(sizeof(void*)*2);
-    targ[0] = bc;
-    targ[1] = (void*)(unsigned long) delay;
-
-    if (pthread_create(&tid,NULL,HelloBlock_ThreadMain,targ) != 0) {
-        RedisModule_AbortBlock(bc);
-        return RedisModule_ReplyWithError(ctx,"-ERR Can't start thread");
-    }
-    return REDISMODULE_OK;
-}*/
 
 /**
  * ACK <queue> <msgid1> [ <msgid2> [ ... ] ]
@@ -474,7 +366,7 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithNull(ctx);
 	}
 	
-	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+	if(RedisModule_ModuleTypeGetType(key) != RELIABLEQ_TYPE){
 		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
@@ -559,7 +451,7 @@ int recoverCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithNull(ctx);
 	}
 	
-	if(RedisModule_ModuleTypeGetType(key) != RQueueRedisType){
+	if(RedisModule_ModuleTypeGetType(key) != RELIABLEQ_TYPE){
 		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
@@ -721,14 +613,14 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
     	.free = RQueueReleaseObject
 	};
 
-   RQueueRedisType = RedisModule_CreateDataType(
+   RELIABLEQ_TYPE = RedisModule_CreateDataType(
 		ctx,
-		"Queue-EDU",
+		"RELIABLEQ",
 		RQUEUE_ENCODING_VERSION,
 		&tm
 	);
 
-   if (RQueueRedisType == NULL) return REDISMODULE_ERR;
+   if (RELIABLEQ_TYPE == NULL) return REDISMODULE_ERR;
 
 	if (RedisModule_CreateCommand(ctx,"mq.push", pushCommand,"write deny-oom",1,1,1) == REDISMODULE_ERR)
       return REDISMODULE_ERR;

@@ -1,5 +1,7 @@
 #include <sys/time.h>
 #include "./rqueue.h"
+#include "../rmutil/util.h"
+#include "../rmutil/strings.h"
 
 /* Return the UNIX time in microseconds */
 long long ustime(void) {
@@ -55,17 +57,63 @@ void setNextMsgID(msgid_t *last_id, msgid_t *new_id) {
     }
 }
 
+int rq_parse_pop_args(
+    RedisModuleCtx *ctx,
+    RedisModuleString **argv,
+    int argc,
+    rq_pop_t *pop
+){
+	long long temp = 0;
+	int k = 1;// pointer to first possible key
+	int left = argc - 1; //arguments left
+
+	//Init pop arguments
+	pop->count = 1;
+	pop->block = 0;
+	pop->key_count = 0;
+
+	// Parse COUNT, if provided
+	if(
+		left >= 3 &&
+		RMUtil_StringEqualsCaseC(argv[k], "COUNT") &&
+		RMUtil_ParseArgs(argv, argc, 2, "l", &temp) == REDISMODULE_OK
+	){
+		if(temp < 0){
+			return 1;
+		}
+
+		pop->count = temp;
+		k += 2;
+		left -= 2;
+	}
+
+	if(
+		left >= 3 &&
+		RMUtil_StringEqualsCaseC(argv[k], "BLOCK") &&
+		RMUtil_ParseArgs(argv, argc, k + 1, "l", &temp) == REDISMODULE_OK
+	){
+		pop->block = temp;
+		k += 2;
+		left -= 2;
+	}
+
+	pop->key_count = argc - k;
+	pop->keys = &argv[k];
+
+	return REDISMODULE_OK;
+}
+
 /**
  * Creates and initializes a fresh new RQUEUE object
  * @return rqueue_t * Pointer to the created object
  */
-rqueue_t *rqueueCreate(){
+rqueue_t *rqueueCreate(const RedisModuleString *name){
 	rqueue_t *rqueue = RedisModule_Alloc(sizeof(*rqueue));
+	rqueue->name = RedisModule_CreateStringFromString(NULL, name);
 	rqueue->last_id.ms = 0;
 	rqueue->last_id.seq = 0;
 	initQueue(&rqueue->undelivered);
 	initQueue(&rqueue->delivered);
-	initQueue(&rqueue->clients);
 	
 	return rqueue;
 }
@@ -76,7 +124,6 @@ rqueue_t *rqueueCreate(){
 long long popAndReply(
 	RedisModuleCtx *ctx,
 	rqueue_t *rqueue,
-	RedisModuleString *qname,
 	long long *count
 )
 {
@@ -111,7 +158,7 @@ long long popAndReply(
 
 		// Finally: reply with a 2-element-array with: MsgID and the payload
 		RedisModule_ReplyWithArray(ctx, 3);
-		RedisModule_ReplyWithString(ctx, qname);
+		RedisModule_ReplyWithString(ctx, rqueue->name);
 		RedisModule_ReplyWithString(
 			ctx,
 			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, topop->id.ms, topop->id.seq)
@@ -164,8 +211,7 @@ void *RQueueRdbLoad(RedisModuleIO *rdb, int encver) {
         return NULL;
     }
 
-	rqueue_t *rqueue = rqueueCreate();
-
+	rqueue_t *rqueue = rqueueCreate(RedisModule_GetKeyNameFromIO(rdb));
     rqueue->undelivered.len = RedisModule_LoadUnsigned(rdb);
     rqueue->delivered.len  = RedisModule_LoadUnsigned(rdb);
 	uint64_t total_messages = rqueue->undelivered.len + rqueue->delivered.len;
@@ -252,30 +298,33 @@ void RQueueReleaseObject(void *value) {
         cur = next;
     }
 
+	//TODO: Release blocked client structures, if any
+
+	// Free name string
+	RedisModule_FreeString(NULL, rqueue->name);
+
     RedisModule_Free(value);
 }
 
-/* Reply callback for blocked MQ.POP */
-int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    REDISMODULE_NOT_USED(argv);
-    REDISMODULE_NOT_USED(argc);
+/**
+ * Free all memory consumed by a blocked client.
+ * @return This function always returns a NULL pointer
+ */
+/*void * free_blocked_client(RedisModuleCtx *ctx, rq_blocked_client_t *client)
+{
+	for(int q = 0; q < client->qcount; q++){
+		RedisModule_FreeString(ctx, client->queues[q]);
+	}
 
-	rq_blocked_client_t *client = RedisModule_GetBlockedClientPrivateData(ctx);
+	RedisModule_Free(client);
 
-	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
-	long long poped = popAndReply(ctx, client->rqueue, client->qname, &client->count);
-	RedisModule_ReplySetArrayLength(ctx, poped);
-	
-	return REDISMODULE_OK;
-}
+	return NULL;
+}*/
 
 /* Timeout callback for blocked MQ.POP */
-int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    REDISMODULE_NOT_USED(argv);
-    REDISMODULE_NOT_USED(argc);
-	RedisModule_Log(ctx,"debug","bpop timeout");
-
-    return RedisModule_ReplyWithNull(ctx);
+int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+	return RedisModule_ReplyWithNull(ctx);
 }
 
 /* Private data freeing callback for MQ.BPOP command. */

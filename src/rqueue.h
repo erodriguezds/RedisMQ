@@ -35,22 +35,21 @@ typedef struct queue_t {
  * Reliable Queue Object 
  */
 typedef struct rqueue_t {
+    RedisModuleString *name; // Redis key for this RQ
     msgid_t last_id;     // Zero if there are yet no items
     queue_t undelivered; // never-delivered queue
     queue_t delivered;   // Queue of messages that has being delivered at-least-one 
-    queue_t clients;     // Blocked Clients
 } rqueue_t;
 
-typedef struct rq_blocked_client_t {
-    RedisModuleBlockedClient *bc; // Redis Blocked Client
-    long long count; // total items the client is willing to pop
-    uint total_ref; // total references to this node
-    uint qcount; // total queues referenced by "queues"
-    RedisModuleString **queues;
-    RedisModuleString *qname; // name of the queue that got items pushed first.
-    rqueue_t *rqueue; // RELIABLEQ object that got items pushed.
-    struct rq_blocked_client_t *next;
-} rq_blocked_client_t;
+/**
+ * POP Arguments
+ */
+typedef struct rq_pop_t {
+    uint64_t count;
+    int64_t block;
+    uint key_count;
+    RedisModuleString **keys;
+} rq_pop_t;
 
 long long mstime(void);
 
@@ -59,8 +58,16 @@ mstime_t mstime(void);
 
 void initQueue(queue_t *queue);
 
+// parses a pop command args
+int rq_parse_pop_args(
+    RedisModuleCtx *ctx,
+    RedisModuleString **argv,
+    int argc,
+    rq_pop_t *pop
+);
+
 /** Creates and initializes a new RELIABLEQ object, and returns a pointer to it. */
-rqueue_t *rqueueCreate();
+rqueue_t *rqueueCreate(const RedisModuleString *name);
 
 /* Generate the next item ID given the previous one. If the current
  * milliseconds Unix time is greater than the previous one, just use this
@@ -75,12 +82,12 @@ void setNextMsgID(msgid_t *last_id, msgid_t *new_id);
 long long popAndReply(
 	RedisModuleCtx *ctx,
 	rqueue_t *rqueue,
-	RedisModuleString *qname,
 	long long *count
 );
 
 /* Blocking commands callbacks */
-int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
+//void rq_unblock_clients(RedisModuleCtx *ctx, rqueue_t *rqueue, int count);
+//int bpop_reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 void bpop_freeData(RedisModuleCtx *ctx, void *privdata);
 void bpop_disconnected(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc);

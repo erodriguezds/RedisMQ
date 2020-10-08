@@ -114,6 +114,7 @@ rqueue_t *rqueueCreate(const RedisModuleString *name){
 	rqueue->last_id.seq = 0;
 	initQueue(&rqueue->undelivered);
 	initQueue(&rqueue->delivered);
+	rqueue->memory_used = sizeof(*rqueue);
 	
 	return rqueue;
 }
@@ -274,6 +275,14 @@ void *RQueueRdbLoad(RedisModuleIO *rdb, int encver) {
 	}
 	
 	return rqueue;
+}
+
+/* The goal of this function is to return the amount of memory used by
+ * the HelloType value. */
+size_t rq_memory_usage(const void *value) {
+    const rqueue_t *rqobj = value;
+
+    return rqobj->memory_used;
 }
 
 

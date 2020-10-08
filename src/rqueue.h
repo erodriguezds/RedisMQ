@@ -8,6 +8,16 @@
 
 typedef long long mstime_t; /* millisecond time type. */
 
+/**
+ * Block of contiguous msg_t structs
+ */
+typedef struct msg_block_t {
+    void *ptr;        //Pointer to the first msg in the block
+    size_t count;     //Total count of messages inside the block
+    size_t acked;     //total messages in the block that has been acknowledged.
+    //size_t mem_usage; //Total memory usage of all nodes in this block
+} msg_block_t;
+
 /* Queue item ID: a 128 bit number composed of a milliseconds time and
  * a sequence counter. IDs generated in the same millisecond (or in a past
  * millisecond if the clock jumped backward) will use the millisecond time
@@ -23,6 +33,7 @@ typedef struct msg_t {
     struct msg_t *next;
     uint deliveries; /* how many times the msg has being delivered*/
     mstime_t lastDelivery; /* Last time the msg was delivered */
+    msg_block_t *block; // msg block to which the msg belongs
 } msg_t;
 
 typedef struct queue_t {
@@ -39,6 +50,7 @@ typedef struct rqueue_t {
     msgid_t last_id;     // Zero if there are yet no items
     queue_t undelivered; // never-delivered queue
     queue_t delivered;   // Queue of messages that has being delivered at-least-one 
+    size_t memory_used;
 } rqueue_t;
 
 /**
@@ -91,6 +103,8 @@ long long popAndReply(
 int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 void bpop_freeData(RedisModuleCtx *ctx, void *privdata);
 void bpop_disconnected(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc);
+
+size_t rq_memory_usage(const void *value);
 
 /* RDB and AOF handlers */
 void RQueueRdbSave(RedisModuleIO *rdb, void *value);

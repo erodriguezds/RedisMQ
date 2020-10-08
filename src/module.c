@@ -88,7 +88,9 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 	rqueue_t *rqueue;
 	msg_t *newmsg;
+	msg_block_t *block = NULL;
 	int count = argc - 2; // count of new messages being pushed
+	size_t strlen; // dummy value for storing the length of RedisModuleString objects
 
 	if (argc < 3) return RedisModule_WrongArity(ctx);
 
@@ -107,13 +109,25 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		return RedisModule_ReplyWithError(ctx,REDISMODULE_ERRORMSG_WRONGTYPE);
 	}
 
-	// create the new message
-	newmsg = RedisModule_Alloc(sizeof(*newmsg) * count);
+	// allocate the memory
+	if(count > 1){
+		block = RedisModule_Alloc(sizeof(*block));
+		block->ptr = RedisModule_Calloc(count, sizeof(*newmsg));
+		block->count = count;
+		block->acked = 0;
+		//block->mem_usage = (sizeof(*newmsg) * count);
+		newmsg = block->ptr;
+		rqueue->memory_used += sizeof(*block) + (sizeof(*newmsg) * count);
+	} else {
+		newmsg = RedisModule_Alloc(sizeof(*newmsg));
+		rqueue->memory_used += sizeof(*newmsg);
+	}
 
-	// Init the new nodes
 	RedisModule_ReplyWithArray(ctx, count);
 
+	// Init the new nodes
 	for(int i = 0, j = 1; i < count; i++, j++){
+		//TODO: refactor this
 		if(i == 0){
 			setNextMsgID(&rqueue->last_id, &newmsg[i].id);
 		} else {
@@ -126,7 +140,13 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 			&newmsg[j] :
 			NULL
 		);
-		newmsg[i].value = RedisModule_CreateStringFromString(NULL, argv[2 + i]);
+		newmsg[i].value = RedisModule_HoldString(NULL, argv[2 + i]);
+		newmsg[i].block = block;
+		
+		//memory usage stats
+		RedisModule_StringPtrLen(newmsg[i].value, &strlen);
+		rqueue->memory_used += strlen;
+
 		RedisModule_ReplyWithString(
 			ctx,
 			RedisModule_CreateStringPrintf(ctx, MSG_ID_FORMAT, newmsg[i].id.ms, newmsg[i].id.seq)
@@ -377,11 +397,13 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	}
 
 	msg_t *cur, *next, *prev;
+	msg_block_t *block;
 	msgid_t id;
 	char *idptr;
 	size_t idlen;
 	char idbuf[128];
 	long removed = 0;
+	size_t strlen;
 	
 	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
 
@@ -412,14 +434,41 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 					rqueue->delivered.last = prev;
 				}
 				
+				//Free string
+				RedisModule_StringPtrLen(cur->value, &strlen);
 				RedisModule_FreeString(NULL, cur->value);
-				RedisModule_Free(cur);
+				cur->value = NULL;
+				rqueue->memory_used -= strlen;
+
+				if(cur->block){
+					block = cur->block;
+					block->acked += 1;
+					//block->mem_usage -= strlen;
+					if(block->acked >= block->count){
+						size_t mem_to_free = (sizeof(*cur) * block->count) + sizeof(*block);
+
+						//Free entire block
+						RedisModule_Free(block->ptr);
+						block->ptr = cur = NULL;
+
+						//Free block struct
+						RedisModule_Free(block);
+						block = NULL;
+
+						// update rqobj memory usage before freeing
+						rqueue->memory_used -= mem_to_free;
+					}
+				} else {
+					RedisModule_Free(cur);
+					cur = NULL;
+				}
 				removed++;
 				rqueue->delivered.len -= 1;
 				RedisModule_ReplyWithString(ctx, argv[i]);
 				break;
+			} else {
+				prev = cur;
 			}
-			prev = cur;
 			cur = next;
 		};
 	}
@@ -610,6 +659,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
     	.rdb_load = RQueueRdbLoad,
     	.rdb_save = RQueueRdbSave,
     	.aof_rewrite = QueueAofRewrite,
+		.mem_usage = rq_memory_usage,
     	.free = RQueueReleaseObject
 	};
 

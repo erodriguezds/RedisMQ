@@ -62,7 +62,7 @@ This command returns an array of elements, where every element is also a 3-eleme
 
 Example Reply:
 ```bash
-127.0.0.1:6379> rq.pop  10  myHighPriorityQueue  myLowPriorityQueue
+127.0.0.1:6379> rq.pop  COUNT  10  myHighPriorityQueue  myLowPriorityQueue
 1) 1) "myHighPriorityQueue"
    2) "1601155608777-1"
    3) "This is the content of the job/message"

@@ -277,6 +277,80 @@ int inspectCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 	return REDISMODULE_OK;
 }
 
+#ifdef DEBUG
+/**
+ * RQ.BLOCKS <key>
+ * 
+ * Gets debug information about allocated block of contiguous messages
+ **/
+int blocksCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
+{
+	RedisModule_AutoMemory(ctx); /* Use automatic memory management. */
+
+	if (argc < 2){
+		return RedisModule_WrongArity(ctx);
+	}
+
+	RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_READ);
+   
+	if(RedisModule_KeyType(key) == REDISMODULE_KEYTYPE_EMPTY){
+		return RedisModule_ReplyWithError(ctx,ERRORMSG_EMPTYKEY);
+	}
+
+	if(RedisModule_ModuleTypeGetType(key) != RELIABLEQ_TYPE){
+		return RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
+	}
+
+	rqueue_t *rqueue = RedisModule_ModuleTypeGetValue(key);
+	msg_block_t *prevblock = NULL;
+	msg_t *curmsg = NULL;
+	int total = 0;
+	
+	RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+
+	//Iterate over the undelivered list
+	curmsg = rqueue->undelivered.first;
+	while (curmsg)
+	{
+		if(curmsg->block && curmsg->block != prevblock){
+			RedisModule_ReplyWithArray(ctx, 3);
+			RedisModule_ReplyWithString(
+				ctx,
+				RedisModule_CreateStringPrintf(ctx, "%p", curmsg->block->ptr)
+			);
+			RedisModule_ReplyWithLongLong(ctx, curmsg->block->count);
+			RedisModule_ReplyWithLongLong(ctx, curmsg->block->acked);
+			total++;
+			prevblock = curmsg->block;
+		}
+		
+		curmsg = curmsg->next;
+	}
+
+	//Iterate over the delivered list
+	curmsg = rqueue->delivered.first;
+	while (curmsg)
+	{
+		if(curmsg->block && curmsg->block != prevblock){
+			RedisModule_ReplyWithArray(ctx, 3);
+			RedisModule_ReplyWithString(
+				ctx,
+				RedisModule_CreateStringPrintf(ctx, "%p", curmsg->block->ptr)
+			);
+			RedisModule_ReplyWithLongLong(ctx, curmsg->block->count);
+			RedisModule_ReplyWithLongLong(ctx, curmsg->block->acked);
+			total++;
+			prevblock = curmsg->block;
+		}
+		
+		curmsg = curmsg->next;
+	}
+	
+	RedisModule_ReplySetArrayLength(ctx, total);
+	
+	return REDISMODULE_OK;
+}
+#endif
 /**
  * Usage: RQ.POP <count> [ BLOCK <ms> ] <key>
  * 
@@ -656,7 +730,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 	// Register the ReliableQueue Type
 	RedisModuleTypeMethods tm = {
 		.version = REDISMODULE_TYPE_METHOD_VERSION,
-    	.rdb_load = RQueueRdbLoad,
+    	.rdb_load = rq_rdb_load,
     	.rdb_save = RQueueRdbSave,
     	.aof_rewrite = QueueAofRewrite,
 		.mem_usage = rq_memory_usage,
@@ -688,6 +762,12 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
 	if (RedisModule_CreateCommand(ctx, "rq.info", infoCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
 		return REDISMODULE_ERR;
 	}
+
+	#ifdef DEBUG
+		if (RedisModule_CreateCommand(ctx, "rq.blocks", blocksCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {
+			return REDISMODULE_ERR;
+		}
+	#endif
 
 	// register xq.parse - the default registration syntax
 	if (RedisModule_CreateCommand(ctx, "rq.inspect", inspectCommand, "readonly", 1, 1, 1) == REDISMODULE_ERR) {

@@ -205,7 +205,7 @@ void RQueueRdbSave(RedisModuleIO *rdb, void *value) {
     }
 }
 
-void *RQueueRdbLoad(RedisModuleIO *rdb, int encver) {
+void *rq_rdb_load(RedisModuleIO *rdb, int encver) {
     if (encver != RQUEUE_ENCODING_VERSION) {
         RedisModule_Log(NULL, "warning", "Can't load data with version %d. Current supported version: %d",
 			encver, RQUEUE_ENCODING_VERSION);
@@ -221,10 +221,51 @@ void *RQueueRdbLoad(RedisModuleIO *rdb, int encver) {
 		return rqueue;
 	}
 
-	msg_t *msg = RedisModule_Alloc(sizeof(*msg) * total_messages);
+	msg_t *msg = NULL, *prev = NULL;
+	size_t strlen;
+
+	for(
+		uint64_t i = 0, left = total_messages;
+		left > 0;
+		//do-nothing
+	){
+		msg_block_t *block = RedisModule_Alloc(sizeof(*block));
+		size_t numelem = ( left > MAX_BLOCK_SIZE ? MAX_BLOCK_SIZE : left );
+		block->ptr = RedisModule_Calloc(numelem, sizeof(*msg));
+		block->count = numelem;
+		block->acked = 0;
+		rqueue->memory_used += sizeof(*block) + (sizeof(*msg) * numelem);
+		
+		//Init the messages
+		msg = block->ptr;
+		for(int j = 0; j < block->count; j++, i++, left--){
+			msg[j].block = block;
+			msg[j].id.ms = RedisModule_LoadUnsigned(rdb);
+			msg[j].id.seq = RedisModule_LoadUnsigned(rdb);
+			msg[j].value = RedisModule_LoadString(rdb);
+			RedisModule_StringPtrLen(msg[j].value, &strlen);
+			rqueue->memory_used += strlen;
+			if(i < rqueue->undelivered.len){
+				msg[j].deliveries = 0;
+				msg[j].lastDelivery = 0;
+				msg[j].next = NULL; //will be initialized in next cycle
+				if(prev){
+					prev->next = &msg[j];
+				}
+			} else {
+				msg[j].deliveries = RedisModule_LoadUnsigned(rdb);
+				msg[j].lastDelivery = RedisModule_LoadUnsigned(rdb);
+				msg[j].next = NULL; //will be initialized in next cycle
+				if(prev && prev->deliveries > 0){
+					prev->next = &msg[j];
+				}
+			}
+			prev = &msg[j];
+		}
+	}
 
 	// load "undelivered" messages
-	if(rqueue->undelivered.len > 0)
+	/*if(rqueue->undelivered.len > 0)
 	{
 		rqueue->undelivered.first = &msg[0];
 
@@ -272,7 +313,7 @@ void *RQueueRdbLoad(RedisModuleIO *rdb, int encver) {
 		}
 
 		rqueue->delivered.last = &msg[rqueue->delivered.len - 1];
-	}
+	}*/
 	
 	return rqueue;
 }

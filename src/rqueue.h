@@ -5,6 +5,7 @@
 
 #define RQUEUE_ENCODING_VERSION 0
 #define MSG_ID_FORMAT "%lu-%lu"
+#define MAX_BLOCK_SIZE 100
 
 typedef long long mstime_t; /* millisecond time type. */
 
@@ -108,5 +109,5 @@ size_t rq_memory_usage(const void *value);
 
 /* RDB and AOF handlers */
 void RQueueRdbSave(RedisModuleIO *rdb, void *value);
-void *RQueueRdbLoad(RedisModuleIO *rdb, int encver);
+void *rq_rdb_load(RedisModuleIO *rdb, int encver);
 void RQueueReleaseObject(void *value);

@@ -233,7 +233,7 @@ void *rq_rdb_load(RedisModuleIO *rdb, int encver) {
 		size_t numelem = ( left > MAX_BLOCK_SIZE ? MAX_BLOCK_SIZE : left );
 		block->ptr = RedisModule_Calloc(numelem, sizeof(*msg));
 		block->count = numelem;
-		block->acked = 0;
+		block->freed = 0;
 		rqueue->memory_used += sizeof(*block) + (sizeof(*msg) * numelem);
 		
 		//Init the messages
@@ -326,50 +326,44 @@ size_t rq_memory_usage(const void *value) {
     return rqobj->memory_used;
 }
 
+// Frees all the memory used by the messages in a queue
+void free_mq(msg_t *first){
+	msg_t *cur = NULL, *next = NULL;
+	msg_block_t *block = NULL;
 
-void RQueueReleaseObject(void *value) {
-	rqueue_t *rqueue = value;
-	msg_t *cur, *next;
-
-	 // Free all undelivered message
-    cur = rqueue->undelivered.first;
-    while(cur) {
+	cur = first;
+	while(cur) {
 		next = cur->next;
 		RedisModule_FreeString(NULL, cur->value);
-        RedisModule_Free(cur);
+		cur->value = NULL;
+		if(cur->block){
+			block = cur->block;
+			block->freed += 1;
+			if(block->freed >= block->count){
+				RedisModule_Free(block->ptr);
+				block->ptr = cur = NULL;
+				RedisModule_Free(block);
+				block = NULL;
+			}
+		} else {
+        	RedisModule_Free(cur);
+		}
         cur = next;
     }
+}
 
-	 // Free all delivered message
-    cur = rqueue->delivered.first;
-    while(cur) {
-        next = cur->next;
-        RedisModule_Free(cur);
-        cur = next;
-    }
+void rq_free(void *value) {
+	rqueue_t *rqueue = value;
 
-	//TODO: Release blocked client structures, if any
+	 // Free all undelivered message
+	free_mq(rqueue->undelivered.first);
+	free_mq(rqueue->delivered.first);
 
 	// Free name string
 	RedisModule_FreeString(NULL, rqueue->name);
 
     RedisModule_Free(value);
 }
-
-/**
- * Free all memory consumed by a blocked client.
- * @return This function always returns a NULL pointer
- */
-/*void * free_blocked_client(RedisModuleCtx *ctx, rq_blocked_client_t *client)
-{
-	for(int q = 0; q < client->qcount; q++){
-		RedisModule_FreeString(ctx, client->queues[q]);
-	}
-
-	RedisModule_Free(client);
-
-	return NULL;
-}*/
 
 /* Timeout callback for blocked RQ.POP */
 int bpop_timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
@@ -383,20 +377,3 @@ void bpop_freeData(RedisModuleCtx *ctx, void *privdata) {
     //RedisModule_Free(privdata);
 	RedisModule_Log(ctx,"debug","Freeing bpop privdata at %p", privdata);
 }
-
-/* An example blocked client disconnection callback.
- *
- * Note that in the case of the HELLO.BLOCK command, the blocked client is now
- * owned by the thread calling sleep(). In this specific case, there is not
- * much we can do, however normally we could instead implement a way to
- * signal the thread that the client disconnected, and sleep the specified
- * amount of seconds with a while loop calling sleep(1), so that once we
- * detect the client disconnection, we can terminate the thread ASAP. */
-/*void bpop_disconnected(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc) {
-    RedisModule_Log(ctx,"warning","Blocked client %p disconnected!",
-        (void*)bc);
-
-    // Here you should cleanup your state / threads, and if possible
-    // call RedisModule_UnblockClient(), or notify the thread that will
-    // call the function ASAP.
-} */

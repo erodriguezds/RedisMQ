@@ -15,7 +15,7 @@ typedef long long mstime_t; /* millisecond time type. */
 typedef struct msg_block_t {
     void *ptr;        //Pointer to the first msg in the block
     size_t count;     //Total count of messages inside the block
-    size_t acked;     //total messages in the block that has been acknowledged.
+    size_t freed;     //total messages in the block that has been acknowledged.
     //size_t mem_usage; //Total memory usage of all nodes in this block
 } msg_block_t;
 
@@ -110,4 +110,4 @@ size_t rq_memory_usage(const void *value);
 /* RDB and AOF handlers */
 void RQueueRdbSave(RedisModuleIO *rdb, void *value);
 void *rq_rdb_load(RedisModuleIO *rdb, int encver);
-void RQueueReleaseObject(void *value);
+void rq_free(void *value);

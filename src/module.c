@@ -114,7 +114,7 @@ int pushCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 		block = RedisModule_Alloc(sizeof(*block));
 		block->ptr = RedisModule_Calloc(count, sizeof(*newmsg));
 		block->count = count;
-		block->acked = 0;
+		block->freed = 0;
 		//block->mem_usage = (sizeof(*newmsg) * count);
 		newmsg = block->ptr;
 		rqueue->memory_used += sizeof(*block) + (sizeof(*newmsg) * count);
@@ -319,7 +319,7 @@ int blocksCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 				RedisModule_CreateStringPrintf(ctx, "%p", curmsg->block->ptr)
 			);
 			RedisModule_ReplyWithLongLong(ctx, curmsg->block->count);
-			RedisModule_ReplyWithLongLong(ctx, curmsg->block->acked);
+			RedisModule_ReplyWithLongLong(ctx, curmsg->block->freed);
 			total++;
 			prevblock = curmsg->block;
 		}
@@ -338,7 +338,7 @@ int blocksCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 				RedisModule_CreateStringPrintf(ctx, "%p", curmsg->block->ptr)
 			);
 			RedisModule_ReplyWithLongLong(ctx, curmsg->block->count);
-			RedisModule_ReplyWithLongLong(ctx, curmsg->block->acked);
+			RedisModule_ReplyWithLongLong(ctx, curmsg->block->freed);
 			total++;
 			prevblock = curmsg->block;
 		}
@@ -516,9 +516,9 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 
 				if(cur->block){
 					block = cur->block;
-					block->acked += 1;
+					block->freed += 1;
 					//block->mem_usage -= strlen;
-					if(block->acked >= block->count){
+					if(block->freed >= block->count){
 						size_t mem_to_free = (sizeof(*cur) * block->count) + sizeof(*block);
 
 						//Free entire block
@@ -734,7 +734,7 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx) {
     	.rdb_save = RQueueRdbSave,
     	.aof_rewrite = QueueAofRewrite,
 		.mem_usage = rq_memory_usage,
-    	.free = RQueueReleaseObject
+    	.free = rq_free
 	};
 
    RELIABLEQ_TYPE = RedisModule_CreateDataType(

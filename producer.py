@@ -5,7 +5,8 @@ import random
 import asyncio
 import redis
 
-def randstr(size=8, chars=string.ascii_uppercase + string.digits):
+def randstr(chars=string.ascii_uppercase + string.digits, minsize=100, maxsize=200):
+    size = random.randint(minsize, maxsize)
     return ''.join(random.choice(chars) for _ in range(size))
 
 r = redis.Redis(
@@ -61,6 +62,10 @@ async def consumer(cid, keys, popcount, timeout):
             #print(f"Total jobs consumed: {total}")
 
 async def main():
+    if(len(sys.argv) < 4):
+        print("Usage:\n   py producer.py  <total>  <bulksize>  <key1>  [ <key2> [ ... ] ]\n")
+        return
+    
     keys = []
     total = int(sys.argv[1])
     bulksize = int(sys.argv[2])

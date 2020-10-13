@@ -8,6 +8,15 @@ If you're looking for a robust Redis-based message broker solution, take a look 
 
 Unlike Disque, this module **does not** aim to be a fully message broker solution. This module is just about the RELIABLEQ data structure, upon which you might implement simple message broking, without requiring a Redis cluster, neither AOF persistence.
 
+## Features
+
+- RQ.ACK command, to acknowledge successful processing of a job or message
+- RQ.RECOVER command, to recover/re-deliver jobs/messages that were already delivered, but not acknowledged after a specified time
+- Optional COUNT parameter in RQ.POP, to pop more than 1 message/job in one single command call
+- Pop from multiple queues in one single RQ.POP call
+- Optional BLOCK parameter in RQ.POP, to support blocking behaviour on one or more queues!!!
+- You'll no longer have to argue with your colleagues whether to push to the left or the right of the list... it's just PUSH...because... it's a QUEUE!!!
+
 ## Quick start
 
 ```
@@ -28,15 +37,13 @@ docker run -p 6379:6379 --name redis-rq erodriguezds/redis-rq:latest
 
 ## The "Reliable Queue"<a name="reliable-queue"></a>
 
-The essence of this module is the "Reliable Queue" data structure ("RQUEUE" from now on). This is a new data structure registered by the module into your Redis instance as a new data type. The data structure itself is very simple: It's essentially a "Queue" (a FIFO list), composed of 2 internal linked-lists : a main list for "undelivered" (never-delivered) messages, and a 2nd list of "delivered" ("at-least-once") messages.
+The module exports a new native type into your Redis instance: the "RELIABLEQ" type. The data structure of a RELIABLEQ is very simple: It behaves like a "Queue" (a FIFO list), but it's composed of 2 internal linked-lists: a main list for "undelivered" (never-delivered) messages, and a 2nd list of "delivered" ("at-least-once") messages.
 
 When you **PUSH** new elements into an RQUEUE key, they get allocated into the main "undelivered" list. A [Redis-Streams-like ID](https://redis.io/topics/streams-intro#entry-ids) is assigned and returned for every item pushed.
 
-When you **POP** elements out of the RQUEUE, you get the ID and the payload of every poped element (as you would expect). However, the poped/returned elements don't really get deallocated from the RQUEUE internal memory. Instead, the poped elements get "moved" from the "undelivered" list into the internal "delivered" (at-least-once) list, and stand there until you **ACK**nowledge them. In more technical terms, no memory allocation or deallocation occurs... we just update some pointers inside the (already allocated) key data.
+When you **POP** elements out of the RQUEUE, you get the ID and the payload of every poped element (as you would expect). However, the poped/returned elements don't really get deallocated from the RQUEUE internal memory. Instead, the poped elements get "moved" from the "undelivered" list into the internal "delivered" (at-least-once) list, and stand there until you **ACK**nowledge them.
 
 When you **ACK**nowledge an item by it's given ID, the element is then removed/deallocated from the "delivered" list, and the memory is finally freed.
-
-If you have worked with Redis Streams, you might find all this very familiar. Well... most of the workflows and commands are heavily inspired by Redis streams... but the memory management is very different. As you might know, the Redis Stream is an append-only-log-like data structure... the memory consumed by such structure just goes up and up as you "stream" (add) more elements... in order to free some memory, you have to manually trim your log... our RQUEUE data structure is, in the other hand... well... you guessed'it.... A QUEUE!!! It only consumes memory as long as you have unprocessed/unacknowleded elements in the queue. 
 
 ## Commands
 

@@ -5,8 +5,8 @@ import random
 import asyncio
 import redis
 
-def randstr(size=8, chars=string.ascii_uppercase + string.digits):
-    return ''.join(random.choice(chars) for _ in range(size))
+def randstr(chars=string.ascii_uppercase + string.digits, minsize=100, maxsize=200):
+    return ''.join(random.choice(chars) for _ in range(random.randint(minsize, maxsize)))
 
 r = redis.Redis(
     host='127.0.0.1',
@@ -28,14 +28,33 @@ def consume(key, count, timeout):
         print(f"Done with job '{job[0]}{job[1]}'... Acknowledging...")
         r.execute_command("RQ.ACK", job[0], job[1])
 
-async def producer(keys, bulksize, cycles):
-    for i in range(cycles):
-        print(f"{time.strftime('%X')}: Producing {bulksize} jobs... Cycle {i}")
-        produce(keys, bulksize)
-        await asyncio.sleep(1)
+async def producer(total, bulksize, keys):
+    batch = []
+    max_k = len(keys) - 1
+    
+    for i in range(0,len(keys)):
+        batch.append([])
+    
+    while total > 0:
+        k = random.randint(0, max_k)
+        key = keys[k]
+        batch[k].append(randstr())
+        if len(batch[k]) >= bulksize:
+            print(f"RQ.PUSH {key} {batch[k]}")
+            r.execute_command("RQ.PUSH", key, *batch[k])
+            batch[k] = []
+        total -= 1
+
+    for k in range(len(keys)):
+        if len(batch[k]) > 0:
+            key = keys[k]
+            print(f"RQ.PUSH {key} {batch[k]}")
+            r.execute_command("RQ.PUSH", key, *batch[k])
+            batch[k] = []
 
 async def consumer(cid, keys, popcount, timeout):
     total = 0
+    print(f"Starting consuming from: {keys}...")
     while True:
         jobs = r.execute_command("RQ.POP", "COUNT", popcount, "BLOCK", timeout, *keys)
         if not jobs or len(jobs) == 0:
@@ -47,11 +66,12 @@ async def consumer(cid, keys, popcount, timeout):
             #print(f"Acknowledge job id '{id}', payload: '{payload}'")
             r.execute_command("RQ.ACK", key, id)
             total += 1
-            #print(f"Total jobs consumed: {total}")
+
+    print(f"Total jobs consumed: {total}")
 
 async def main():
     keys = [ "myrq-hp", "myrq-mp", "myrq-lp" ]
-    producer_task = asyncio.create_task(producer(keys, 100, 30))
+    producer_task = asyncio.create_task(producer(100, 10, keys))
     consumer_task = asyncio.create_task(consumer(1,keys, 2, 5000))
     
     print(f"started at {time.strftime('%X')}")

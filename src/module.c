@@ -535,6 +535,7 @@ int ackCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc)
 				} else {
 					RedisModule_Free(cur);
 					cur = NULL;
+					rqueue->memory_used -= sizeof(*cur);
 				}
 				removed++;
 				rqueue->delivered.len -= 1;
